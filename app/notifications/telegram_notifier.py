@@ -5,7 +5,7 @@ import logging
 import httpx
 
 from app.config import settings
-from app.notifications.base import NotificationPayload, Notifier
+from app.notifications.base import ArbitragePayload, NotificationPayload, Notifier
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class TelegramNotifier(Notifier):
         self.bot_token = bot_token or getattr(settings, "TELEGRAM_BOT_TOKEN", "")
         self.client = httpx.AsyncClient(timeout=10.0)
 
-    async def send(self, destination: str, payload: NotificationPayload) -> bool:
+    async def send(self, destination: str, payload: NotificationPayload | ArbitragePayload) -> bool:
         """
         Envía notificación por Telegram.
 

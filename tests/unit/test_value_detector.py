@@ -1,5 +1,14 @@
 
-from app.core.value_detector import detect_value_bets
+import pytest
+
+from app.core.value_detector import (
+    MAX_ODDS,
+    MAX_ODDS_CV,
+    MIN_ODDS,
+    _outcome_odds_dispersed,
+    detect_value_bets,
+    detect_value_bets_vs_reference,
+)
 
 
 class TestDetectValueBets:
@@ -68,3 +77,153 @@ class TestDetectValueBets:
         results = detect_value_bets(odds_many, self.outcome_keys, min_value=0.0, min_bookmakers=3)
         if results:
             assert results[0].edge_confidence == "high"
+
+    def test_odds_below_min_filtered(self):
+        """Favoritos extremos (odds < 1.30) se descartan."""
+        odds = {f"bk{i}": [1.10, 8.00, 15.00] for i in range(6)}
+        results = detect_value_bets(odds, self.outcome_keys, min_value=0.0, min_bookmakers=3)
+        # Ningún outcome 0 (odds=1.10 < MIN_ODDS=1.30) debe aparecer
+        assert all(vb.outcome_key != "home" for vb in results)
+
+    def test_odds_above_max_filtered(self):
+        """Longshots extremos (odds > 10.0) se descartan."""
+        odds = {f"bk{i}": [1.50, 3.50, 15.00] for i in range(6)}
+        results = detect_value_bets(odds, self.outcome_keys, min_value=0.0, min_bookmakers=3)
+        # outcome 2 (odds=15 > MAX_ODDS) nunca presente
+        assert all(vb.outcome_key != "away" for vb in results)
+
+    def test_dispersed_outcome_filtered(self):
+        """Outcomes con CV > 15% se descartan (protege contra errores de datos)."""
+        # Home muy disperso (1.80, 5.00, 1.85, 5.00, 1.90) → CV alto
+        odds = {
+            "bk0": [1.80, 3.30, 3.60],
+            "bk1": [5.00, 3.30, 3.60],
+            "bk2": [1.85, 3.30, 3.60],
+            "bk3": [5.00, 3.30, 3.60],
+            "bk4": [1.90, 3.30, 3.60],
+        }
+        results = detect_value_bets(odds, self.outcome_keys, min_value=0.0, min_bookmakers=5)
+        assert all(vb.outcome_key != "home" for vb in results)
+
+    def test_min_bookmakers_default_is_five(self):
+        """Con 4 bookmakers y default min_bookmakers=5, sin resultados."""
+        odds = {f"bk{i}": [2.10, 3.30, 3.60] for i in range(4)}
+        results = detect_value_bets(odds, self.outcome_keys)
+        assert results == []
+
+    def test_min_value_default_is_five_pct(self):
+        """Con EV 3% y default min_value=0.05, no se encuentra."""
+        # All bookmakers very similar → no value > 5%
+        odds = {f"bk{i}": [2.10, 3.30, 3.60] for i in range(6)}
+        results = detect_value_bets(odds, self.outcome_keys)
+        assert results == []
+
+
+class TestOutcomeOddsDispersed:
+    def test_returns_true_when_fewer_than_three(self):
+        odds = {"bk0": [2.00, 3.30], "bk1": [2.05, 3.35]}
+        assert _outcome_odds_dispersed(odds, 0) is True
+
+    def test_returns_false_for_consistent_odds(self):
+        odds = {f"bk{i}": [2.00 + i * 0.01, 3.30, 3.60] for i in range(6)}
+        assert _outcome_odds_dispersed(odds, 0) is False
+
+    def test_returns_true_for_dispersed_odds(self):
+        odds = {
+            "bk0": [1.80, 3.30, 3.60],
+            "bk1": [5.00, 3.30, 3.60],
+            "bk2": [1.85, 3.30, 3.60],
+            "bk3": [5.00, 3.30, 3.60],
+            "bk4": [1.90, 3.30, 3.60],
+        }
+        assert _outcome_odds_dispersed(odds, 0) is True
+        # Outcome 1 (draw) is consistent
+        assert _outcome_odds_dispersed(odds, 1) is False
+
+    def test_cv_threshold_boundary(self):
+        """CV exactamente en umbral MAX_ODDS_CV no dispara filtro."""
+        # Build odds where outcome 0 has known CV just below threshold
+        prices = [2.00, 2.10, 2.20, 2.30, 2.40]  # mean=2.2, stdev~0.158, cv~0.072
+        odds = {f"bk{i}": [p, 3.30, 3.60] for i, p in enumerate(prices)}
+        assert _outcome_odds_dispersed(odds, 0) is False
+
+
+class TestConstants:
+    def test_thresholds_are_sane(self):
+        assert 1.0 < MIN_ODDS < 2.0
+        assert MAX_ODDS > 5.0
+        assert 0.0 < MAX_ODDS_CV < 1.0
+
+
+class TestDetectValueBetsVsReference:
+    def setup_method(self):
+        self.outcome_keys = ["home", "draw", "away"]
+
+    def test_returns_empty_when_reference_missing(self):
+        odds = {"coolbet": [2.10, 3.30, 3.60]}
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle"
+        )
+        assert results == []
+
+    def test_excludes_reference_from_results(self):
+        odds = {
+            "pinnacle": [2.00, 3.50, 3.80],
+            "coolbet": [2.10, 3.50, 3.80],
+        }
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle", min_value=0.0
+        )
+        assert all(vb.bookmaker_key != "pinnacle" for vb in results)
+
+    def test_finds_value_when_other_book_higher_than_reference(self):
+        # Pinnacle fair: home ~0.500; coolbet offers 2.25 → EV ~0.125 > 0
+        odds = {
+            "pinnacle": [2.00, 3.50, 3.80],
+            "coolbet": [2.25, 3.40, 3.70],
+        }
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle", min_value=0.02
+        )
+        assert any(vb.bookmaker_key == "coolbet" and vb.outcome_key == "home" for vb in results)
+
+    def test_no_value_when_books_agree(self):
+        odds = {
+            "pinnacle": [2.00, 3.50, 3.80],
+            "coolbet": [2.00, 3.50, 3.80],
+        }
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle", min_value=0.02
+        )
+        assert results == []
+
+    def test_confidence_tag_is_reference(self):
+        odds = {
+            "pinnacle": [2.00, 3.50, 3.80],
+            "coolbet": [2.30, 3.40, 3.70],
+        }
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle", min_value=0.0
+        )
+        assert all(vb.edge_confidence == "reference" for vb in results)
+
+    def test_odds_range_filter_applies(self):
+        odds = {
+            "pinnacle": [2.00, 3.50, 3.80],
+            "coolbet": [1.20, 3.50, 12.00],  # home below MIN_ODDS, away above MAX_ODDS
+        }
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle", min_value=0.0
+        )
+        assert all(vb.outcome_key not in ("home", "away") for vb in results)
+
+    def test_sorted_by_value_desc(self):
+        odds = {
+            "pinnacle": [2.00, 3.50, 3.80],
+            "coolbet": [2.30, 3.80, 4.20],
+        }
+        results = detect_value_bets_vs_reference(
+            odds, self.outcome_keys, reference_bookmaker="pinnacle", min_value=0.0
+        )
+        for i in range(len(results) - 1):
+            assert results[i].value_pct >= results[i + 1].value_pct

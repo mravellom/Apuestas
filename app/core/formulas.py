@@ -22,9 +22,44 @@ def remove_vig_proportional(implied_probs: list[float]) -> list[float]:
     return [p / total for p in implied_probs]
 
 
-def odds_to_fair_probs(odds_list: list[float]) -> list[float]:
+def remove_vig_shin(implied_probs: list[float], tol: float = 1e-8, max_iter: int = 100) -> list[float]:
+    """
+    Remueve el vig usando el modelo Shin (1993).
+    Corrige el sesgo de longshots: las casas cargan más margen en outsiders.
+    Resuelve z (fracción de insiders) via bisección tal que sum(p_i) = 1.
+    """
+    import math
+
+    overround = sum(implied_probs)
+    if overround <= 1.0:
+        return remove_vig_proportional(implied_probs)
+
+    def fair_probs_for_z(z: float) -> list[float]:
+        denom = 2.0 * (1.0 - z)
+        return [
+            (math.sqrt(z ** 2 + 4.0 * (1.0 - z) * (q * q / overround)) - z) / denom
+            for q in implied_probs
+        ]
+
+    lo, hi = 0.0, 0.99
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2.0
+        s = sum(fair_probs_for_z(mid))
+        if abs(s - 1.0) < tol:
+            break
+        if s > 1.0:
+            lo = mid
+        else:
+            hi = mid
+
+    return fair_probs_for_z(mid)
+
+
+def odds_to_fair_probs(odds_list: list[float], method: str = "shin") -> list[float]:
     """Convierte una lista de cuotas a probabilidades justas (sin vig)."""
     implied = [implied_probability(o) for o in odds_list]
+    if method == "shin":
+        return remove_vig_shin(implied)
     return remove_vig_proportional(implied)
 
 

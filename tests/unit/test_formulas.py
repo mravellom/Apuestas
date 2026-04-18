@@ -9,6 +9,7 @@ from app.core.formulas import (
     kelly_criterion,
     odds_to_fair_probs,
     remove_vig_proportional,
+    remove_vig_shin,
     value_calculation,
 )
 
@@ -42,6 +43,51 @@ class TestRemoveVig:
         # Si no hay vig (probs suman 1), no cambia
         fair = remove_vig_proportional([0.5, 0.3, 0.2])
         assert fair == pytest.approx([0.5, 0.3, 0.2])
+
+
+class TestRemoveVigShin:
+    def test_preserves_ranking(self):
+        implied = [implied_probability(2.10), implied_probability(3.30), implied_probability(3.60)]
+        fair = remove_vig_shin(implied)
+        assert fair[0] > fair[1] > fair[2]
+
+    def test_falls_back_when_no_vig(self):
+        # If probs already sum to <= 1, Shin reduces to proportional scaling
+        fair = remove_vig_shin([0.5, 0.3, 0.2])
+        assert fair == pytest.approx([0.5, 0.3, 0.2])
+
+    def test_reduces_overround(self):
+        """Output must be closer to 1.0 than the raw input."""
+        implied = [implied_probability(2.10), implied_probability(3.30), implied_probability(3.60)]
+        overround = sum(implied)
+        fair = remove_vig_shin(implied)
+        assert abs(sum(fair) - 1.0) < abs(overround - 1.0)
+
+    def test_two_way_market_symmetry(self):
+        # Symmetric input must yield symmetric output
+        implied = [implied_probability(1.90), implied_probability(1.90)]
+        fair = remove_vig_shin(implied)
+        assert fair[0] == pytest.approx(fair[1])
+
+    def test_all_probs_in_valid_range(self):
+        implied = [0.40, 0.40, 0.35]  # sums to 1.15 (15% overround)
+        fair = remove_vig_shin(implied)
+        assert all(0 < p < 1 for p in fair)
+
+    def test_sums_to_one(self):
+        implied = [implied_probability(2.10), implied_probability(3.30), implied_probability(3.60)]
+        fair = remove_vig_shin(implied)
+        assert sum(fair) == pytest.approx(1.0, abs=1e-6)
+
+    def test_longshot_bias_correction(self):
+        """Shin shifts mass from longshots to favorites relative to proportional method."""
+        implied = [implied_probability(1.50), implied_probability(4.00), implied_probability(8.00)]
+        fair_shin = remove_vig_shin(implied)
+        fair_prop = remove_vig_proportional(implied)
+        # Favorite: shin strictly > proportional
+        assert fair_shin[0] > fair_prop[0]
+        # Longshot: shin strictly < proportional
+        assert fair_shin[2] < fair_prop[2]
 
 
 class TestOddsToFairProbs:

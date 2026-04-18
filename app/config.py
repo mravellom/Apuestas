@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     # The Odds API
     ODDS_API_KEY: str = ""
     ODDS_API_BASE_URL: str = "https://api.the-odds-api.com/v4"
+    # Comma-separated bookmaker keys. Empty = accept all. Non-empty = allowlist applied at ingest.
+    BOOKMAKERS_ALLOWED: str = ""
+    # Value detection reference model. Empty = consensus (needs >=3 books).
+    # Set to a bookmaker key (e.g. "pinnacle") to treat that book as "true odds".
+    VALUE_REFERENCE_BOOKMAKER: str = ""
+    # Minimum bookmakers for arbitrage scan. Drop to 2 when using restricted allowlist.
+    ARB_MIN_BOOKMAKERS: int = 5
+    # Minimum EV for value detection (0.01 = 1%). Lower with sharp reference; higher with consensus.
+    VALUE_MIN_EV: float = 0.03
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""

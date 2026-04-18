@@ -115,7 +115,7 @@ class OddsScraperAdapter(BaseScraper):
             try:
                 commence_time = datetime.fromisoformat(
                     commence_str.replace("Z", "+00:00")
-                )
+                ).replace(tzinfo=None)
             except ValueError:
                 continue
 

@@ -15,6 +15,11 @@ class OddsAPIAdapter(DataSourceAdapter):
         self.api_key = api_key or settings.ODDS_API_KEY
         self.base_url = base_url or settings.ODDS_API_BASE_URL
         self.client = httpx.AsyncClient(timeout=30.0)
+        self.allowed_bookmakers = {
+            b.strip().lower()
+            for b in settings.BOOKMAKERS_ALLOWED.split(",")
+            if b.strip()
+        }
 
     async def fetch_events(self, sport: str) -> list[dict]:
         """Obtiene lista de eventos para un deporte."""
@@ -55,9 +60,11 @@ class OddsAPIAdapter(DataSourceAdapter):
         for event in response.json():
             commence_time = datetime.fromisoformat(
                 event["commence_time"].replace("Z", "+00:00")
-            )
+            ).replace(tzinfo=None)
 
             for bookmaker in event.get("bookmakers", []):
+                if self.allowed_bookmakers and bookmaker["key"].lower() not in self.allowed_bookmakers:
+                    continue
                 for market in bookmaker.get("markets", []):
                     outcomes = [
                         RawOutcome(name=o["name"], price=o["price"])

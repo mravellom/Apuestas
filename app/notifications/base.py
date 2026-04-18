@@ -40,6 +40,45 @@ class NotificationPayload:
         )
 
 
+@dataclass
+class ArbitragePayload:
+    """Datos de un arbitraje para notificar."""
+
+    match_home: str
+    match_away: str
+    commence_time: str
+    market_type: str
+    profit_pct: float
+    total_implied: float
+    legs: list[dict]  # [{outcome_name, bookmaker, odds, stake_pct}, ...]
+
+    def format_message(self) -> str:
+        profit_str = f"{self.profit_pct:.2f}%"
+        msg = (
+            f"🔒 ARBITRAJE DETECTADO\n"
+            f"\n"
+            f"⚽ {self.match_home} vs {self.match_away}\n"
+            f"📅 {self.commence_time}\n"
+            f"📊 Mercado: {self.market_type}\n"
+            f"💰 Ganancia garantizada: +{profit_str}\n"
+            f"📉 Suma implícita: {self.total_implied:.4f}\n"
+            f"\n"
+            f"📋 APUESTAS:\n"
+        )
+        for leg in self.legs:
+            pct = leg['stake_pct'] * 100
+            msg += (
+                f"  • {leg['outcome_name']} → {leg['bookmaker']}\n"
+                f"    Cuota: {leg['odds']:.2f} | Stake: {pct:.1f}%\n"
+            )
+        msg += (
+            f"\n"
+            f"💡 Con €100: apuestas €{sum(leg['stake_pct'] * 100 for leg in self.legs):.0f}, "
+            f"cobras €{100 * (1 + self.profit_pct / 100):.2f} seguro"
+        )
+        return msg
+
+
 class Notifier(ABC):
     @abstractmethod
     async def send(self, destination: str, payload: NotificationPayload) -> bool:

@@ -7,7 +7,11 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.value_detector import ValueBet, detect_value_bets
+from app.core.value_detector import (
+    ValueBet,
+    detect_value_bets,
+    detect_value_bets_vs_reference,
+)
 from app.models.bookmaker import Bookmaker
 from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
@@ -19,11 +23,17 @@ logger = logging.getLogger(__name__)
 class OpportunityDetectionService:
     def __init__(
         self,
-        min_value: float = 0.03,
-        min_bookmakers: int = 3,
+        min_value: float = 0.05,
+        min_bookmakers: int = 5,
+        min_minutes_to_kickoff: int = 15,
+        max_minutes_to_kickoff: int = 10080,  # 7 days — tighten to 48h for real betting
+        reference_bookmaker: str | None = None,
     ):
         self.min_value = min_value
         self.min_bookmakers = min_bookmakers
+        self.min_minutes_to_kickoff = min_minutes_to_kickoff
+        self.max_minutes_to_kickoff = max_minutes_to_kickoff
+        self.reference_bookmaker = reference_bookmaker
 
     async def detect_all(
         self, db: AsyncSession
@@ -35,12 +45,16 @@ class OpportunityDetectionService:
         counts = {"markets_scanned": 0, "opportunities_found": 0, "errors": 0}
         new_opportunities: list[Opportunity] = []
 
-        # Get all upcoming matches with active markets
-        now = datetime.now(timezone.utc)
+        # Get upcoming matches within valid window
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        from datetime import timedelta
+        min_time = now + timedelta(minutes=self.min_minutes_to_kickoff)
+        max_time = now + timedelta(minutes=self.max_minutes_to_kickoff)
         matches = await db.execute(
             select(Match).where(
                 Match.status == "scheduled",
-                Match.commence_time > now,
+                Match.commence_time > min_time,
+                Match.commence_time <= max_time,
             )
         )
 
@@ -92,18 +106,32 @@ class OpportunityDetectionService:
 
         outcome_keys = [o.key for o in outcomes]
 
-        # Get sharp bookmakers
+        # Get latest odds per outcome per bookmaker
+        odds_by_bookmaker = await self._get_latest_odds_by_bookmaker(db, outcomes)
+
+        if self.reference_bookmaker:
+            # Reference mode: compare every book vs reference (de-vigued) fair odds.
+            # Needs reference + at least one other book, regardless of min_bookmakers.
+            if self.reference_bookmaker not in odds_by_bookmaker:
+                return []
+            if len(odds_by_bookmaker) < 2:
+                return []
+            return detect_value_bets_vs_reference(
+                odds_by_bookmaker=odds_by_bookmaker,
+                outcome_keys=outcome_keys,
+                reference_bookmaker=self.reference_bookmaker,
+                min_value=self.min_value,
+            )
+
+        # Consensus mode (multi-book): gate on min_bookmakers.
+        if len(odds_by_bookmaker) < self.min_bookmakers:
+            return []
+
         sharps_result = await db.execute(
             select(Bookmaker).where(Bookmaker.is_sharp.is_(True))
         )
         sharp_keys = {b.key for b in sharps_result.scalars().all()}
 
-        # Get latest odds per outcome per bookmaker
-        odds_by_bookmaker = await self._get_latest_odds_by_bookmaker(db, outcomes)
-        if len(odds_by_bookmaker) < self.min_bookmakers:
-            return []
-
-        # Run value detection
         return detect_value_bets(
             odds_by_bookmaker=odds_by_bookmaker,
             outcome_keys=outcome_keys,

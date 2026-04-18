@@ -54,6 +54,21 @@ class Outcome(Base):
     odds: Mapped[list["Odds"]] = relationship(back_populates="outcome")
 
 
+class ClosingLine(Base):
+    __tablename__ = "closing_lines"
+    __table_args__ = (
+        UniqueConstraint("outcome_id", "bookmaker_id", name="uq_closing_outcome_bm"),
+        Index("idx_closing_outcome", "outcome_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    outcome_id: Mapped[int] = mapped_column(ForeignKey("outcomes.id", ondelete="CASCADE"))
+    bookmaker_id: Mapped[int] = mapped_column(ForeignKey("bookmakers.id"))
+    price: Mapped[Decimal] = mapped_column(Numeric(8, 4))
+    captured_at: Mapped[datetime] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class Odds(Base):
     __tablename__ = "odds"
     __table_args__ = (
