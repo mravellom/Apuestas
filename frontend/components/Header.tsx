@@ -23,6 +23,9 @@ export function Header() {
           <Link href="/arbitrage" className="text-muted hover:text-white">
             Oportunidades
           </Link>
+          <Link href="/paper" className="text-muted hover:text-white">
+            Paper trading
+          </Link>
           <button
             type="button"
             onClick={handleLogout}

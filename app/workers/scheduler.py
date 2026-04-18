@@ -4,6 +4,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.config import settings
 from app.workers.jobs import (
     capture_closing_lines_job,
     cleanup_job,
@@ -21,33 +22,33 @@ scheduler = AsyncIOScheduler()
 def configure_scheduler():
     """Configura los jobs del scheduler."""
 
-    # Fetch odds cada 15 minutos (ajustado para plan Free: ~96 req/día)
+    # Fetch odds — intervalo configurable (default 15 min, seguro para free tier)
     scheduler.add_job(
         fetch_odds_job,
         "interval",
-        minutes=15,
+        seconds=settings.SCHEDULER_FETCH_ODDS_SECONDS,
         id="fetch_odds",
         name="Fetch odds from external sources",
         replace_existing=True,
         max_instances=1,
     )
 
-    # Detect value bets cada 15 minutos (tras el fetch)
+    # Detect value bets tras el fetch
     scheduler.add_job(
         detect_value_job,
         "interval",
-        minutes=15,
+        seconds=settings.SCHEDULER_DETECT_SECONDS,
         id="detect_value",
         name="Detect value betting opportunities",
         replace_existing=True,
         max_instances=1,
     )
 
-    # Detect arbitrage (surebets) cada 15 minutos
+    # Detect arbitrage (surebets)
     scheduler.add_job(
         detect_arbitrage_job,
         "interval",
-        minutes=15,
+        seconds=settings.SCHEDULER_DETECT_SECONDS,
         id="detect_arbitrage",
         name="Detect arbitrage opportunities",
         replace_existing=True,
@@ -65,11 +66,11 @@ def configure_scheduler():
         max_instances=1,
     )
 
-    # Fetch scores and settle paper bets cada 30 min
+    # Fetch scores and settle paper bets
     scheduler.add_job(
         fetch_scores_job,
         "interval",
-        minutes=30,
+        seconds=settings.SCHEDULER_SCORES_SECONDS,
         id="fetch_scores",
         name="Fetch match scores and settle paper bets",
         replace_existing=True,

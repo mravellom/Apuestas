@@ -33,3 +33,31 @@ export interface CurrentUser {
   role: "free" | "premium" | "admin";
   is_active: boolean;
 }
+
+export interface PaperBet {
+  id: number;
+  source_type: "value" | "arbitrage";
+  match: string;
+  outcome: string;
+  bookmaker: string;
+  odds_taken: number;
+  stake_units: number;
+  ev_at_placement: number | null;
+  placed_at: string;
+  result: "pending" | "won" | "lost" | "void";
+  profit_units: number | null;
+}
+
+export interface PaperStats {
+  total_bets: number;
+  pending: number;
+  won: number;
+  lost: number;
+  void: number;
+  total_staked_units: number;
+  total_profit_units: number;
+  roi_pct: number | null;
+  win_rate_pct: number | null;
+  by_source: Record<string, { bets: number; profit_units: number }>;
+  by_bookmaker: Record<string, { bets: number; profit_units: number }>;
+}

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     ARB_MIN_BOOKMAKERS: int = 5
     # Minimum EV for value detection (0.01 = 1%). Lower with sharp reference; higher with consensus.
     VALUE_MIN_EV: float = 0.03
+    # Scheduler intervals (seconds). Defaults are quota-safe for The Odds API free tier.
+    # Drop to 30-60s only with paid plans — polling costs one request per league per interval.
+    SCHEDULER_FETCH_ODDS_SECONDS: int = 15 * 60
+    SCHEDULER_DETECT_SECONDS: int = 15 * 60
+    SCHEDULER_SCORES_SECONDS: int = 30 * 60
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""

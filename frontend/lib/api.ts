@@ -1,7 +1,7 @@
 "use client";
 
 import { clearToken, getToken } from "./auth";
-import type { Arbitrage, CurrentUser, LoginResponse } from "./types";
+import type { Arbitrage, CurrentUser, LoginResponse, PaperBet, PaperStats } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -84,4 +84,22 @@ export async function getArbitrage(id: number): Promise<Arbitrage | null> {
   if (found) return found;
   const expired = await listArbitrage({ status: "expired" });
   return expired.find((a) => a.id === id) ?? null;
+}
+
+export interface PaperBetFilters {
+  result?: "pending" | "won" | "lost" | "void";
+  sourceType?: "value" | "arbitrage";
+  limit?: number;
+}
+
+export async function listPaperBets(filters: PaperBetFilters = {}): Promise<PaperBet[]> {
+  const params = new URLSearchParams();
+  if (filters.result) params.set("result", filters.result);
+  if (filters.sourceType) params.set("source_type", filters.sourceType);
+  params.set("limit", String(filters.limit ?? 100));
+  return request<PaperBet[]>(`/api/v1/paper/bets?${params.toString()}`);
+}
+
+export async function getPaperStats(): Promise<PaperStats> {
+  return request<PaperStats>("/api/v1/paper/stats");
 }
