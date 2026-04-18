@@ -16,6 +16,7 @@ from app.models.bookmaker import Bookmaker
 from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import Opportunity
+from app.services.paper_trading_service import PaperTradingService
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class OpportunityDetectionService:
         self.min_minutes_to_kickoff = min_minutes_to_kickoff
         self.max_minutes_to_kickoff = max_minutes_to_kickoff
         self.reference_bookmaker = reference_bookmaker
+        self.paper = PaperTradingService()
 
     async def detect_all(
         self, db: AsyncSession
@@ -244,6 +246,7 @@ class OpportunityDetectionService:
             )
             db.add(opp)
             await db.flush()
+            await self.paper.record_value_bet(db, opp, vb, match.id)
             return opp
 
     async def _expire_opportunities(self, db: AsyncSession, now: datetime) -> int:

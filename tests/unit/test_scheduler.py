@@ -28,6 +28,7 @@ EXPECTED_JOB_IDS = {
     "detect_value",
     "detect_arbitrage",
     "capture_closing_lines",
+    "fetch_scores",
     "cleanup",
 }
 
@@ -50,6 +51,7 @@ class TestConfigureScheduler:
         assert intervals["detect_value"] == 15 * 60
         assert intervals["detect_arbitrage"] == 15 * 60
         assert intervals["capture_closing_lines"] == 60
+        assert intervals["fetch_scores"] == 30 * 60
         assert intervals["cleanup"] == 60 * 60
 
     def test_max_instances_is_one(self):

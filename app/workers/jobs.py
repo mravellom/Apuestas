@@ -233,6 +233,73 @@ async def capture_closing_lines_job():
         logger.error(f"Capture closing lines job failed: {e}")
 
 
+async def fetch_scores_job():
+    """Job: obtiene resultados de partidos recientes y liquida paper bets.
+
+    The Odds API `/sports/{sport}/scores?daysFrom=3` es gratis para partidos
+    completados en los últimos 3 días. Marca matches como completed con scores
+    y dispara settlement de paper bets pendientes.
+    """
+    if not settings.ODDS_API_KEY:
+        return
+
+    import httpx
+    from sqlalchemy import select
+    from app.models.match import Match
+    from app.services.paper_trading_service import PaperTradingService
+
+    leagues = [
+        "soccer_chile_campeonato",
+        "soccer_brazil_campeonato",
+        "soccer_italy_serie_b",
+        "soccer_epl",
+    ]
+
+    updated = 0
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for league in leagues:
+            try:
+                r = await client.get(
+                    f"{settings.ODDS_API_BASE_URL}/sports/{league}/scores",
+                    params={"apiKey": settings.ODDS_API_KEY, "daysFrom": 3},
+                )
+                if r.status_code != 200:
+                    continue
+                events = r.json()
+            except Exception as e:
+                logger.error("Scores fetch error for %s: %s", league, e)
+                continue
+
+            async with async_session() as db:
+                for evt in events:
+                    if not evt.get("completed") or not evt.get("scores"):
+                        continue
+                    match = (
+                        await db.execute(select(Match).where(Match.external_id == evt.get("id")))
+                    ).scalar_one_or_none()
+                    if not match:
+                        continue
+                    home_score = next((int(s["score"]) for s in evt["scores"] if s["name"] == evt["home_team"]), None)
+                    away_score = next((int(s["score"]) for s in evt["scores"] if s["name"] == evt["away_team"]), None)
+                    if home_score is None or away_score is None:
+                        continue
+                    if match.home_score != home_score or match.away_score != away_score or match.status != "completed":
+                        match.home_score = home_score
+                        match.away_score = away_score
+                        match.status = "completed"
+                        updated += 1
+                await db.commit()
+
+    # Settle any paper bets whose matches are now completed with scores
+    async with async_session() as db:
+        paper = PaperTradingService()
+        settle_result = await paper.settle_all_completed(db)
+        logger.info(
+            "Scores: %d match scores updated; settled %d paper bets across %d matches",
+            updated, settle_result["settled"], settle_result["matches"],
+        )
+
+
 async def cleanup_job():
     """Job: limpieza de datos expirados."""
     from datetime import datetime, timezone

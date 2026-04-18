@@ -12,6 +12,7 @@ from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
 from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
+from app.services.paper_trading_service import PaperTradingService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class ArbitrageDetectionService:
         self.min_minutes_to_kickoff = min_minutes_to_kickoff
         self.max_minutes_to_kickoff = max_minutes_to_kickoff
         self.max_odds_age_minutes = max_odds_age_minutes
+        self.paper = PaperTradingService()
 
     async def detect_all(
         self, db: AsyncSession
@@ -213,6 +215,7 @@ class ArbitrageDetectionService:
             )
             db.add(record)
             await db.flush()
+            await self.paper.record_arbitrage(db, record)
             return record
 
     async def _expire_arbs(self, db: AsyncSession, now: datetime) -> int:

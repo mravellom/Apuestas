@@ -10,6 +10,7 @@ from app.workers.jobs import (
     detect_arbitrage_job,
     detect_value_job,
     fetch_odds_job,
+    fetch_scores_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,17 @@ def configure_scheduler():
         minutes=1,
         id="capture_closing_lines",
         name="Capture closing lines",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Fetch scores and settle paper bets cada 30 min
+    scheduler.add_job(
+        fetch_scores_job,
+        "interval",
+        minutes=30,
+        id="fetch_scores",
+        name="Fetch match scores and settle paper bets",
         replace_existing=True,
         max_instances=1,
     )
