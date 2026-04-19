@@ -29,6 +29,11 @@ class League(Base):
     name: Mapped[str] = mapped_column(String(200))
     country: Mapped[str | None] = mapped_column(String(100))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Si False, la liga se ingesta (odds + scores) pero no entra al pipeline de
+    # detección de value/arbitraje. Útil para acumular histórico de mercados
+    # que aún no justifican operar (ej. NFL/NBA — demasiado eficientes para
+    # el polling actual de 15min).
+    detection_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     sport: Mapped["Sport"] = relationship(back_populates="leagues")

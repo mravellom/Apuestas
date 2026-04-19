@@ -23,17 +23,57 @@ async def fetch_odds_job():
 
     try:
         async with async_session() as db:
-            counts = await service.ingest_odds(
-                db,
-                sport_key="football",
-                league_keys=[
-                    "soccer_chile_campeonato",
-                    "soccer_brazil_campeonato",
-                    "soccer_italy_serie_b",
-                ],
-                regions=["eu", "uk"],
-                markets=["h2h"],
-            )
+            # Fetch por sport: cada sport tiene su sport_key en DB y sus ligas.
+            # Regiones "us,us2" traen offshore US (bovada, betonlineag, mybookieag, betus, lowvig).
+            configs = [
+                {
+                    "sport_key": "football",
+                    "leagues": [
+                        "soccer_chile_campeonato",
+                        "soccer_brazil_campeonato",
+                        "soccer_italy_serie_b",
+                        "soccer_usa_mls",
+                    ],
+                    "regions": ["eu", "uk", "us", "us2"],
+                    "markets": ["h2h"],
+                },
+                {
+                    "sport_key": "basketball",
+                    "leagues": ["basketball_nba"],
+                    "regions": ["us", "us2", "eu"],
+                    "markets": ["h2h", "spreads", "totals"],
+                },
+                {
+                    "sport_key": "baseball",
+                    "leagues": ["baseball_mlb"],
+                    "regions": ["us", "us2", "eu"],
+                    "markets": ["h2h", "spreads", "totals"],
+                },
+                {
+                    "sport_key": "americanfootball",
+                    "leagues": ["americanfootball_nfl"],
+                    "regions": ["us", "us2", "eu"],
+                    "markets": ["h2h", "spreads", "totals"],
+                },
+                {
+                    "sport_key": "icehockey",
+                    "leagues": ["icehockey_nhl"],
+                    "regions": ["us", "us2", "eu"],
+                    "markets": ["h2h", "totals"],
+                },
+            ]
+            total = {"events": 0, "odds_saved": 0, "errors": 0}
+            for cfg in configs:
+                c = await service.ingest_odds(
+                    db,
+                    sport_key=cfg["sport_key"],
+                    league_keys=cfg["leagues"],
+                    regions=cfg["regions"],
+                    markets=cfg["markets"],
+                )
+                for k in total:
+                    total[k] += c.get(k, 0)
+            counts = total
             logger.info(
                 "Fetch complete: %d events, %d odds saved, %d errors",
                 counts["events"], counts["odds_saved"], counts["errors"],
@@ -252,7 +292,11 @@ async def fetch_scores_job():
         "soccer_chile_campeonato",
         "soccer_brazil_campeonato",
         "soccer_italy_serie_b",
-        "soccer_epl",
+        "soccer_usa_mls",
+        "basketball_nba",
+        "baseball_mlb",
+        "americanfootball_nfl",
+        "icehockey_nhl",
     ]
 
     updated = 0

@@ -72,6 +72,41 @@ def value_calculation(fair_probability: float, decimal_odds: float) -> float:
     return (fair_probability * decimal_odds) - 1.0
 
 
+def value_calculation_net(
+    fair_probability: float, decimal_odds: float, commission_pct: float = 0.0
+) -> float:
+    """
+    EV después de restar comisión del broker sobre la ganancia.
+
+    Modelo de comisión: broker cobra `commission_pct` sobre profit (no sobre stake).
+    - Bet $1 pierde: −$1 (sin comisión)
+    - Bet $1 gana: +(odds − 1) × (1 − c) neto
+
+    EV_neto = p × (odds − 1) × (1 − c) − (1 − p)
+            = p × odds − 1 − p × (odds − 1) × c
+    """
+    if commission_pct <= 0:
+        return value_calculation(fair_probability, decimal_odds)
+    b = decimal_odds - 1.0
+    return fair_probability * b * (1.0 - commission_pct) - (1.0 - fair_probability)
+
+
+def kelly_criterion_net(
+    probability: float, decimal_odds: float, commission_pct: float = 0.0
+) -> float:
+    """
+    Kelly ajustado por comisión. Usa odds efectivas post-comisión:
+        odds_efectiva = 1 + (odds − 1) × (1 − c)
+    y aplica Kelly estándar con esa odd.
+    """
+    if decimal_odds <= 1.0:
+        return 0.0
+    if commission_pct <= 0:
+        return kelly_criterion(probability, decimal_odds)
+    effective_odds = 1.0 + (decimal_odds - 1.0) * (1.0 - commission_pct)
+    return kelly_criterion(probability, effective_odds)
+
+
 def kelly_criterion(probability: float, decimal_odds: float) -> float:
     """
     Kelly Criterion completo.

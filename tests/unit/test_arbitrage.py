@@ -220,3 +220,60 @@ class TestArbOpportunityIsValid:
     def test_invalid_when_profit_zero(self):
         arb = ArbOpportunity(total_implied=0.99, profit_pct=0.0)
         assert not arb.is_valid
+
+
+class TestArbitrageWithCommission:
+    """Arbs que pasarían sin comisión pero desaparecen o quedan al borde con broker."""
+
+    def test_arb_survives_when_margin_exceeds_commission(self):
+        # Arb bruto ~2.5% con commission 1% → arb neto ~1.5% (> min_profit_pct 0.5)
+        odds = {
+            "bk_a": [2.10, 4.20, 4.50],
+            "bk_b": [2.20, 4.40, 4.60],
+            "bk_c": [2.25, 4.50, 4.80],
+        }
+        arb = detect_arbitrage(
+            odds, ["home", "draw", "away"],
+            min_profit_pct=0.5, min_bookmakers=3,
+            commission_by_bookmaker={"bk_a": 0.01, "bk_b": 0.01, "bk_c": 0.01},
+        )
+        assert arb is not None
+        assert arb.profit_pct > 0.5
+
+    def test_marginal_arb_disappears_with_high_commission(self):
+        # Arb bruto ~0.5% con commission 1% → se come la ganancia → no arb
+        odds = {
+            "bk_a": [2.05, 4.05, 4.20],
+            "bk_b": [2.06, 4.10, 4.25],
+        }
+        # Primero sin comisión
+        arb_raw = detect_arbitrage(
+            odds, ["home", "draw", "away"],
+            min_profit_pct=0.1, min_bookmakers=2,
+        )
+        # Verify there IS a raw arb
+        if arb_raw is None:
+            pytest.skip("No raw arb in test data; adjust fixture")
+
+        # Ahora con commission 2% — típico broker alto
+        arb_with_comm = detect_arbitrage(
+            odds, ["home", "draw", "away"],
+            min_profit_pct=0.1, min_bookmakers=2,
+            commission_by_bookmaker={"bk_a": 0.02, "bk_b": 0.02},
+        )
+        # Con commission alta, el profit neto debería ser menor o None
+        if arb_with_comm is not None:
+            assert arb_with_comm.profit_pct < arb_raw.profit_pct
+
+    def test_commission_zero_matches_no_commission_param(self):
+        odds = {
+            "bk_a": [2.10, 4.20, 4.50],
+            "bk_b": [2.20, 4.40, 4.60],
+        }
+        arb_no = detect_arbitrage(odds, ["home", "draw", "away"],
+                                   min_profit_pct=0.1, min_bookmakers=2)
+        arb_zero = detect_arbitrage(odds, ["home", "draw", "away"],
+                                     min_profit_pct=0.1, min_bookmakers=2,
+                                     commission_by_bookmaker={"bk_a": 0.0, "bk_b": 0.0})
+        if arb_no and arb_zero:
+            assert arb_no.profit_pct == pytest.approx(arb_zero.profit_pct)

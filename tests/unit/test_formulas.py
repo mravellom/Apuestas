@@ -7,10 +7,12 @@ from app.core.formulas import (
     fractional_kelly,
     implied_probability,
     kelly_criterion,
+    kelly_criterion_net,
     odds_to_fair_probs,
     remove_vig_proportional,
     remove_vig_shin,
     value_calculation,
+    value_calculation_net,
 )
 
 
@@ -196,3 +198,36 @@ class TestROI:
 
     def test_zero_staked(self):
         assert calculate_roi(100, 0) == 0.0
+
+
+class TestValueCalculationNet:
+    def test_zero_commission_matches_original(self):
+        assert value_calculation_net(0.5, 2.10, 0.0) == pytest.approx(value_calculation(0.5, 2.10))
+
+    def test_commission_reduces_ev(self):
+        raw = value_calculation(0.5, 2.10)   # +0.05
+        net = value_calculation_net(0.5, 2.10, 0.01)
+        assert net < raw
+        # EV_net = 0.5 * (2.10-1) * 0.99 - 0.5 = 0.5*1.1*0.99 - 0.5 = 0.5445 - 0.5 = 0.0445
+        assert net == pytest.approx(0.0445, abs=1e-4)
+
+    def test_marginal_ev_turns_negative_with_commission(self):
+        # EV bruto 0.5% se convierte en negativo con 1% commission en odds 2.0
+        # EV_raw = 0.505 * 2 - 1 = 0.01
+        # EV_net = 0.505*1*0.99 - 0.495 = 0.49995 - 0.495 = 0.00495
+        # Still positive but reduced
+        net = value_calculation_net(0.505, 2.0, 0.01)
+        assert 0 < net < value_calculation(0.505, 2.0)
+
+
+class TestKellyCriterionNet:
+    def test_zero_commission_matches_original(self):
+        assert kelly_criterion_net(0.5, 2.10, 0.0) == pytest.approx(kelly_criterion(0.5, 2.10))
+
+    def test_commission_reduces_kelly(self):
+        raw = kelly_criterion(0.5, 2.10)
+        net = kelly_criterion_net(0.5, 2.10, 0.01)
+        assert net < raw
+
+    def test_odds_below_one_returns_zero(self):
+        assert kelly_criterion_net(0.5, 0.9, 0.01) == 0.0

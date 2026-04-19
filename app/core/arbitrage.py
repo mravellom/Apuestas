@@ -60,6 +60,7 @@ def detect_arbitrage(
     outcome_names: list[str] | None = None,
     min_profit_pct: float = 0.5,
     min_bookmakers: int = 5,
+    commission_by_bookmaker: dict[str, float] | None = None,
 ) -> ArbOpportunity | None:
     """
     Detecta si existe arbitraje en un mercado.
@@ -80,14 +81,24 @@ def detect_arbitrage(
     if outcome_names is None:
         outcome_names = outcome_keys
 
+    commission_by_bookmaker = commission_by_bookmaker or {}
+
     best = find_best_odds(odds_by_bookmaker, outcome_keys)
 
     # Verify all outcomes have valid odds
     if any(odds <= 1.0 or bk == "" for odds, bk in best):
         return None
 
-    # Core arbitrage condition: sum(1/best_odds_i) < 1
-    total_implied = sum(1.0 / odds for odds, _ in best)
+    # Adjust odds for broker commission: only the winning leg pays commission,
+    # and exactly one leg wins. Effective payout per leg:
+    #   effective_odds = 1 + (odds − 1) × (1 − c_book)
+    effective_best = [
+        (1.0 + (odds - 1.0) * (1.0 - commission_by_bookmaker.get(bk, 0.0)), bk)
+        for odds, bk in best
+    ]
+
+    # Core arbitrage condition with commission: sum(1/effective_odds) < 1
+    total_implied = sum(1.0 / odds for odds, _ in effective_best)
 
     if total_implied >= 1.0:
         return None
@@ -97,17 +108,18 @@ def detect_arbitrage(
     if profit_pct < min_profit_pct:
         return None
 
-    # Calculate optimal stakes (proportional to implied probability)
+    # Calculate optimal stakes proportional to effective (post-commission) probabilities
+    # so that payout is equal across all outcomes. Raw odds stored in legs for transparency.
     legs = []
-    for i, (odds, bk_key) in enumerate(best):
-        imp = 1.0 / odds
-        stake_pct = imp / total_implied  # fraction of total capital
+    for i, ((odds, bk_key), (eff_odds, _)) in enumerate(zip(best, effective_best)):
+        eff_imp = 1.0 / eff_odds
+        stake_pct = eff_imp / total_implied  # fraction of total capital
         legs.append(ArbLeg(
             outcome_key=outcome_keys[i],
             outcome_name=outcome_names[i] if i < len(outcome_names) else outcome_keys[i],
             bookmaker_key=bk_key,
             best_odds=odds,
-            implied_prob=round(imp, 5),
+            implied_prob=round(eff_imp, 5),
             stake_pct=round(stake_pct, 5),
         ))
 

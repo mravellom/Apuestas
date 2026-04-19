@@ -1,6 +1,7 @@
 from app.models.alert import AlertConfig
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
+from app.models.broker import Broker
 from app.models.market import ClosingLine, Market, MarketType, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import BetTracking, Opportunity
@@ -15,6 +16,7 @@ __all__ = [
     "Bankroll",
     "BetTracking",
     "Bookmaker",
+    "Broker",
     "ClosingLine",
     "League",
     "Market",

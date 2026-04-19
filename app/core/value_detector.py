@@ -7,8 +7,10 @@ from app.core.formulas import (
     consensus_probability,
     implied_probability,
     kelly_criterion,
+    kelly_criterion_net,
     odds_to_fair_probs,
     value_calculation,
+    value_calculation_net,
 )
 
 MIN_ODDS = 1.30
@@ -122,6 +124,7 @@ def detect_value_bets_vs_reference(
     outcome_keys: list[str],
     reference_bookmaker: str,
     min_value: float = 0.02,
+    commission_by_bookmaker: dict[str, float] | None = None,
 ) -> list[ValueBet]:
     """
     Detecta value bets usando un bookmaker de referencia como "cuota justa".
@@ -149,6 +152,7 @@ def detect_value_bets_vs_reference(
         return []
 
     fair_probs = odds_to_fair_probs(reference_odds)
+    commission_by_bookmaker = commission_by_bookmaker or {}
 
     value_bets: list[ValueBet] = []
     for bookmaker_key, odds_list in odds_by_bookmaker.items():
@@ -157,16 +161,18 @@ def detect_value_bets_vs_reference(
         if len(odds_list) != len(outcome_keys):
             continue
 
+        commission = commission_by_bookmaker.get(bookmaker_key, 0.0)
+
         for i, odds in enumerate(odds_list):
             if odds < MIN_ODDS or odds > MAX_ODDS:
                 continue
 
             fair_prob = fair_probs[i]
             impl_prob = implied_probability(odds)
-            value = value_calculation(fair_prob, odds)
+            value = value_calculation_net(fair_prob, odds, commission)
 
             if value >= min_value:
-                kelly = kelly_criterion(fair_prob, odds)
+                kelly = kelly_criterion_net(fair_prob, odds, commission)
                 value_bets.append(
                     ValueBet(
                         outcome_index=i,

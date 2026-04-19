@@ -1,14 +1,21 @@
 """Seed data para inicializar la base de datos con datos base."""
 
+from decimal import Decimal
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bookmaker import Bookmaker
+from app.models.broker import Broker
 from app.models.market import MarketType
 from app.models.sport import League, Season, Sport
 
 SPORTS = [
     {"key": "football", "name": "Football"},
+    {"key": "basketball", "name": "Basketball"},
+    {"key": "baseball", "name": "Baseball"},
+    {"key": "americanfootball", "name": "American Football"},
+    {"key": "icehockey", "name": "Ice Hockey"},
 ]
 
 LEAGUES = [
@@ -32,6 +39,19 @@ LEAGUES = [
     {"sport_key": "football", "key": "soccer_uefa_champs_league", "name": "UEFA Champions League", "country": "Europe"},
     # Europa League
     {"sport_key": "football", "key": "soccer_uefa_europa_league", "name": "UEFA Europa League", "country": "Europe"},
+    # LATAM
+    {"sport_key": "football", "key": "soccer_chile_campeonato", "name": "Primera División Chile", "country": "Chile"},
+    {"sport_key": "football", "key": "soccer_brazil_campeonato", "name": "Brasileirão Série A", "country": "Brazil"},
+    {"sport_key": "football", "key": "soccer_argentina_primera_division", "name": "Primera División Argentina", "country": "Argentina"},
+    {"sport_key": "football", "key": "soccer_italy_serie_b", "name": "Serie B", "country": "Italy"},
+    # MLS (US soccer)
+    {"sport_key": "football", "key": "soccer_usa_mls", "name": "MLS", "country": "USA"},
+    # US sports — MLB activo para detección; NBA/NFL/NHL solo monitoreo
+    # (mercados demasiado eficientes para el polling actual; se reevalúan con datos).
+    {"sport_key": "baseball", "key": "baseball_mlb", "name": "MLB", "country": "USA"},
+    {"sport_key": "basketball", "key": "basketball_nba", "name": "NBA", "country": "USA", "detection_enabled": False},
+    {"sport_key": "americanfootball", "key": "americanfootball_nfl", "name": "NFL", "country": "USA", "detection_enabled": False},
+    {"sport_key": "icehockey", "key": "icehockey_nhl", "name": "NHL", "country": "USA", "detection_enabled": False},
 ]
 
 MARKET_TYPES = [
@@ -43,24 +63,48 @@ MARKET_TYPES = [
     {"key": "double_chance", "name": "Double Chance", "description": "Doble oportunidad: 1X, X2 o 12"},
 ]
 
+BROKERS = [
+    # Intermediarios que dan acceso a sharp books a apostadores fuera de sus jurisdicciones.
+    # Desde Chile, SportMarket es la puerta de entrada a Pinnacle/Matchbook/SBObet/IBC.
+    # Comisión: 1% sobre ganancia (baja a 0.5% con volumen alto).
+    {
+        "key": "sportmarket",
+        "name": "SportMarket",
+        "default_commission_pct": Decimal("0.01"),
+        "typical_latency_ms": 1000,
+    },
+]
+
+# Books accesibles vía broker (default commission heredada del broker si no se sobreescribe).
+BOOKMAKER_BROKER_MAP = {
+    "pinnacle": "sportmarket",
+    "matchbook": "sportmarket",
+}
+
 BOOKMAKERS = [
     # Sharp bookmakers (peso extra en consenso)
     {"key": "pinnacle", "name": "Pinnacle", "is_sharp": True},
     {"key": "betfair_ex_eu", "name": "Betfair Exchange", "is_sharp": True},
     {"key": "matchbook", "name": "Matchbook", "is_sharp": True},
-    # Bookmakers regulares
+    # Soft books EU/UK
     {"key": "bet365", "name": "Bet365", "is_sharp": False},
     {"key": "williamhill", "name": "William Hill", "is_sharp": False},
     {"key": "unibet_eu", "name": "Unibet", "is_sharp": False},
     {"key": "betsson", "name": "Betsson", "is_sharp": False},
     {"key": "marathonbet", "name": "Marathon Bet", "is_sharp": False},
-    {"key": "1xbet", "name": "1xBet", "is_sharp": False},
+    {"key": "onexbet", "name": "1xBet", "is_sharp": False},
     {"key": "betway", "name": "Betway", "is_sharp": False},
     {"key": "coolbet", "name": "Coolbet", "is_sharp": False},
     {"key": "sport888", "name": "888sport", "is_sharp": False},
     {"key": "bwin", "name": "Bwin", "is_sharp": False},
     {"key": "betclic", "name": "Betclic", "is_sharp": False},
     {"key": "nordicbet", "name": "NordicBet", "is_sharp": False},
+    # US offshore (accesibles desde Chile, cubren US sports)
+    {"key": "bovada", "name": "Bovada", "is_sharp": False},
+    {"key": "betonlineag", "name": "BetOnline", "is_sharp": False},
+    {"key": "mybookieag", "name": "MyBookie", "is_sharp": False},
+    {"key": "betus", "name": "BetUS", "is_sharp": False},
+    {"key": "lowvig", "name": "LowVig.ag", "is_sharp": True},  # baja vig = cuotas más sharp
 ]
 
 
@@ -69,7 +113,7 @@ async def seed_database(db: AsyncSession) -> dict[str, int]:
     Inserta datos base. Es idempotente: no duplica si ya existen.
     Retorna contadores de lo insertado.
     """
-    counts = {"sports": 0, "leagues": 0, "market_types": 0, "bookmakers": 0, "seasons": 0}
+    counts = {"sports": 0, "leagues": 0, "market_types": 0, "bookmakers": 0, "seasons": 0, "brokers": 0}
 
     # Sports
     sport_map: dict[str, int] = {}
@@ -88,16 +132,20 @@ async def seed_database(db: AsyncSession) -> dict[str, int]:
         sport_id = sport_map.get(lg["sport_key"])
         if not sport_id:
             continue
+        detection_enabled = lg.get("detection_enabled", True)
         existing = await db.execute(select(League).where(League.key == lg["key"]))
-        if not existing.scalar_one_or_none():
-            league = League(
+        league = existing.scalar_one_or_none()
+        if not league:
+            db.add(League(
                 sport_id=sport_id,
                 key=lg["key"],
                 name=lg["name"],
                 country=lg.get("country"),
-            )
-            db.add(league)
+                detection_enabled=detection_enabled,
+            ))
             counts["leagues"] += 1
+        elif league.detection_enabled != detection_enabled:
+            league.detection_enabled = detection_enabled
 
     await db.flush()
 
@@ -119,12 +167,41 @@ async def seed_database(db: AsyncSession) -> dict[str, int]:
             db.add(MarketType(key=mt["key"], name=mt["name"], description=mt.get("description")))
             counts["market_types"] += 1
 
+    # Brokers — crear antes de bookmakers porque bookmaker.broker_id los referencia
+    broker_map: dict[str, int] = {}
+    for br in BROKERS:
+        existing = await db.execute(select(Broker).where(Broker.key == br["key"]))
+        broker = existing.scalar_one_or_none()
+        if not broker:
+            broker = Broker(
+                key=br["key"],
+                name=br["name"],
+                default_commission_pct=br["default_commission_pct"],
+                typical_latency_ms=br["typical_latency_ms"],
+            )
+            db.add(broker)
+            await db.flush()
+            counts["brokers"] += 1
+        broker_map[br["key"]] = broker.id
+
     # Bookmakers
     for bk in BOOKMAKERS:
+        broker_key = BOOKMAKER_BROKER_MAP.get(bk["key"])
+        broker_id = broker_map.get(broker_key) if broker_key else None
+
         existing = await db.execute(select(Bookmaker).where(Bookmaker.key == bk["key"]))
-        if not existing.scalar_one_or_none():
-            db.add(Bookmaker(key=bk["key"], name=bk["name"], is_sharp=bk["is_sharp"]))
+        bookmaker = existing.scalar_one_or_none()
+        if not bookmaker:
+            db.add(Bookmaker(
+                key=bk["key"],
+                name=bk["name"],
+                is_sharp=bk["is_sharp"],
+                broker_id=broker_id,
+            ))
             counts["bookmakers"] += 1
+        elif bookmaker.broker_id != broker_id:
+            # Re-linking if broker assignment changed
+            bookmaker.broker_id = broker_id
 
     await db.commit()
     return counts

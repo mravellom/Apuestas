@@ -6,12 +6,14 @@ from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.arbitrage import ArbOpportunity, detect_arbitrage
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
 from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
+from app.models.sport import League, Season
 from app.services.paper_trading_service import PaperTradingService
 
 logger = logging.getLogger(__name__)
@@ -43,23 +45,29 @@ class ArbitrageDetectionService:
         counts = {"markets_scanned": 0, "arbs_found": 0, "errors": 0}
         new_arbs: list[ArbitrageOpportunity] = []
 
+        commission_map = await self._load_commission_map(db)
+
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         min_time = now + timedelta(minutes=self.min_minutes_to_kickoff)
         max_time = now + timedelta(minutes=self.max_minutes_to_kickoff)
 
         matches = (
             await db.execute(
-                select(Match).where(
+                select(Match)
+                .join(Season, Match.season_id == Season.id)
+                .join(League, Season.league_id == League.id)
+                .where(
                     Match.status == "scheduled",
                     Match.commence_time > min_time,
                     Match.commence_time <= max_time,
+                    League.detection_enabled.is_(True),
                 )
             )
         ).scalars().all()
 
         for match in matches:
             try:
-                found, scanned = await self._detect_for_match(db, match)
+                found, scanned = await self._detect_for_match(db, match, commission_map)
                 counts["markets_scanned"] += scanned
                 counts["arbs_found"] += len(found)
                 new_arbs.extend(found)
@@ -75,7 +83,7 @@ class ArbitrageDetectionService:
         return counts, new_arbs
 
     async def _detect_for_match(
-        self, db: AsyncSession, match: Match
+        self, db: AsyncSession, match: Match, commission_map: dict[str, float]
     ) -> tuple[list[ArbitrageOpportunity], int]:
         new_arbs: list[ArbitrageOpportunity] = []
 
@@ -88,7 +96,7 @@ class ArbitrageDetectionService:
         ).scalars().all()
 
         for market in markets:
-            arb = await self._detect_for_market(db, market)
+            arb = await self._detect_for_market(db, market, commission_map)
             if arb:
                 saved = await self._save_arb(db, arb, market, match)
                 if saved:
@@ -97,7 +105,7 @@ class ArbitrageDetectionService:
         return new_arbs, len(markets)
 
     async def _detect_for_market(
-        self, db: AsyncSession, market: Market
+        self, db: AsyncSession, market: Market, commission_map: dict[str, float]
     ) -> ArbOpportunity | None:
         outcomes = (
             await db.execute(
@@ -119,7 +127,25 @@ class ArbitrageDetectionService:
             outcome_names=outcome_names,
             min_profit_pct=self.min_profit_pct,
             min_bookmakers=self.min_bookmakers,
+            commission_by_bookmaker=commission_map,
         )
+
+    async def _load_commission_map(self, db: AsyncSession) -> dict[str, float]:
+        """
+        {bookmaker_key: comisión efectiva (0-1)} resolviendo bookmaker.commission_pct
+        con fallback a broker.default_commission_pct. Books con 0 quedan fuera.
+        """
+        result = await db.execute(
+            select(Bookmaker).options(selectinload(Bookmaker.broker))
+        )
+        commissions: dict[str, float] = {}
+        for bm in result.scalars().all():
+            comm = float(bm.commission_pct or 0)
+            if comm == 0 and bm.broker is not None:
+                comm = float(bm.broker.default_commission_pct or 0)
+            if comm > 0:
+                commissions[bm.key] = comm
+        return commissions
 
     async def _get_latest_odds_by_bookmaker(
         self, db: AsyncSession, outcomes: list[Outcome]

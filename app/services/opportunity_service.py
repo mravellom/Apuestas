@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.value_detector import (
     ValueBet,
@@ -16,6 +17,7 @@ from app.models.bookmaker import Bookmaker
 from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import Opportunity
+from app.models.sport import League, Season
 from app.services.paper_trading_service import PaperTradingService
 
 logger = logging.getLogger(__name__)
@@ -47,22 +49,29 @@ class OpportunityDetectionService:
         counts = {"markets_scanned": 0, "opportunities_found": 0, "errors": 0}
         new_opportunities: list[Opportunity] = []
 
+        # Commission map se carga una vez por corrida (cambia rara vez).
+        commission_map = await self._load_commission_map(db)
+
         # Get upcoming matches within valid window
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         from datetime import timedelta
         min_time = now + timedelta(minutes=self.min_minutes_to_kickoff)
         max_time = now + timedelta(minutes=self.max_minutes_to_kickoff)
         matches = await db.execute(
-            select(Match).where(
+            select(Match)
+            .join(Season, Match.season_id == Season.id)
+            .join(League, Season.league_id == League.id)
+            .where(
                 Match.status == "scheduled",
                 Match.commence_time > min_time,
                 Match.commence_time <= max_time,
+                League.detection_enabled.is_(True),
             )
         )
 
         for match in matches.scalars().all():
             try:
-                found_opps = await self._detect_for_match(db, match)
+                found_opps = await self._detect_for_match(db, match, commission_map)
                 counts["opportunities_found"] += len(found_opps)
                 new_opportunities.extend(found_opps)
             except Exception as e:
@@ -77,7 +86,7 @@ class OpportunityDetectionService:
         return counts, new_opportunities
 
     async def _detect_for_match(
-        self, db: AsyncSession, match: Match
+        self, db: AsyncSession, match: Match, commission_map: dict[str, float]
     ) -> list[Opportunity]:
         """Detecta value bets para todos los mercados de un partido."""
         new_opps: list[Opportunity] = []
@@ -88,7 +97,7 @@ class OpportunityDetectionService:
         )
 
         for market in markets_result.scalars().all():
-            value_bets = await self._detect_for_market(db, market)
+            value_bets = await self._detect_for_market(db, market, commission_map)
             for vb in value_bets:
                 opp = await self._save_opportunity(db, vb, market, match)
                 if opp:
@@ -96,7 +105,9 @@ class OpportunityDetectionService:
 
         return new_opps
 
-    async def _detect_for_market(self, db: AsyncSession, market: Market) -> list[ValueBet]:
+    async def _detect_for_market(
+        self, db: AsyncSession, market: Market, commission_map: dict[str, float]
+    ) -> list[ValueBet]:
         """Detecta value bets para un mercado específico."""
         # Get all outcomes
         outcomes_result = await db.execute(
@@ -123,6 +134,7 @@ class OpportunityDetectionService:
                 outcome_keys=outcome_keys,
                 reference_bookmaker=self.reference_bookmaker,
                 min_value=self.min_value,
+                commission_by_bookmaker=commission_map,
             )
 
         # Consensus mode (multi-book): gate on min_bookmakers.
@@ -141,6 +153,26 @@ class OpportunityDetectionService:
             min_value=self.min_value,
             min_bookmakers=self.min_bookmakers,
         )
+
+    async def _load_commission_map(self, db: AsyncSession) -> dict[str, float]:
+        """
+        {bookmaker_key: comisión efectiva (0-1)}.
+
+        Resolución: `bookmaker.commission_pct` si > 0, sino
+        `broker.default_commission_pct` si hay broker asociado. Books sin
+        comisión quedan fuera del dict (se interpretan como 0 en los detectores).
+        """
+        result = await db.execute(
+            select(Bookmaker).options(selectinload(Bookmaker.broker))
+        )
+        commissions: dict[str, float] = {}
+        for bm in result.scalars().all():
+            comm = float(bm.commission_pct or 0)
+            if comm == 0 and bm.broker is not None:
+                comm = float(bm.broker.default_commission_pct or 0)
+            if comm > 0:
+                commissions[bm.key] = comm
+        return commissions
 
     async def _get_latest_odds_by_bookmaker(
         self, db: AsyncSession, outcomes: list[Outcome]

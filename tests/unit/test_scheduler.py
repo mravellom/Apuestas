@@ -41,17 +41,18 @@ class TestConfigureScheduler:
         assert len(scheduler_module.scheduler.get_jobs()) == len(EXPECTED_JOB_IDS)
 
     def test_intervals_match_design(self):
+        from app.config import settings
         scheduler_module.configure_scheduler()
 
         intervals = {
             job.id: int(job.trigger.interval.total_seconds())
             for job in scheduler_module.scheduler.get_jobs()
         }
-        assert intervals["fetch_odds"] == 15 * 60
-        assert intervals["detect_value"] == 15 * 60
-        assert intervals["detect_arbitrage"] == 15 * 60
+        assert intervals["fetch_odds"] == settings.SCHEDULER_FETCH_ODDS_SECONDS
+        assert intervals["detect_value"] == settings.SCHEDULER_DETECT_SECONDS
+        assert intervals["detect_arbitrage"] == settings.SCHEDULER_DETECT_SECONDS
         assert intervals["capture_closing_lines"] == 60
-        assert intervals["fetch_scores"] == 30 * 60
+        assert intervals["fetch_scores"] == settings.SCHEDULER_SCORES_SECONDS
         assert intervals["cleanup"] == 60 * 60
 
     def test_max_instances_is_one(self):
