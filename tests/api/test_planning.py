@@ -198,6 +198,51 @@ class TestDailyPlanner:
         r = await client.get("/api/v1/planning/daily?bankroll_id=1&daily_cap=100")
         assert r.status_code == 401
 
+    async def test_exposure_by_bookmaker_tracks_stake_across_arbs(
+        self, client, auth_headers, db_session, test_user
+    ):
+        """Bug #8: el plan reporta exposición acumulada por libro."""
+        fx = await _seed_arbs(db_session, test_user.id, [
+            # Dos arbs que comparten el bookmaker 'shared'.
+            {"profit_pct": 2.0, "books": ["shared", "bk_a"]},
+            {"profit_pct": 1.5, "books": ["shared", "bk_b"]},
+        ])
+        r = await client.get(
+            f"/api/v1/planning/daily?bankroll_id={fx['bankroll'].id}"
+            f"&daily_cap=1000&target_pct=1.0&max_stake_per_arb_pct=50",
+            headers=auth_headers,
+        )
+        body = r.json()
+        exposure = body["exposure_by_bookmaker"]
+        # 'shared' debe aparecer con la suma de stakes de ambos arbs.
+        # bk_a y bk_b cada uno con solo su arb.
+        assert "shared" in exposure
+        assert exposure["shared"] > 0
+        # Si 'shared' está en 2 arbs con stake_pct=0.5 cada uno, debe tener
+        # más stake que los books únicos.
+        if "bk_a" in exposure:
+            assert exposure["shared"] >= exposure["bk_a"]
+
+    async def test_concentration_warning_emitted_when_book_exceeds_30pct(
+        self, client, auth_headers, db_session, test_user
+    ):
+        """Bug #8: warning cuando un libro concentra > 30% del cap."""
+        # Un único arb grande que mete >30% en cada uno de sus 2 libros.
+        fx = await _seed_arbs(db_session, test_user.id, [
+            {"profit_pct": 3.0, "books": ["big_book_a", "big_book_b"]},
+        ])
+        r = await client.get(
+            f"/api/v1/planning/daily?bankroll_id={fx['bankroll'].id}"
+            f"&daily_cap=1000&target_pct=10.0&max_stake_per_arb_pct=100",
+            headers=auth_headers,
+        )
+        body = r.json()
+        # Con max_per_arb=100 y target_pct=10 → el único arb absorbe stake
+        # grande; 50% × stake → >30% per book → warning.
+        warnings = body["concentration_warnings"]
+        assert len(warnings) > 0
+        assert any("big_book_a" in w or "big_book_b" in w for w in warnings)
+
     async def test_uses_config_defaults_when_params_absent(
         self, client, auth_headers, db_session, test_user
     ):

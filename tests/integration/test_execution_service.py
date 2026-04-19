@@ -459,6 +459,52 @@ async def test_revalidate_alive_when_odds_unchanged(db_session):
 
 
 @pytest.mark.asyncio
+async def test_revalidate_dead_when_leg_bookmaker_inactive(db_session):
+    """Bug #5: si un bookmaker del arb original se marca inactivo, arb queda dead."""
+    fx = await _make_fixture(db_session)
+    fx["bk_pin"].active = False
+    await db_session.commit()
+
+    svc = ArbitrageDetectionService()
+    result = await svc.revalidate_arb(db_session, fx["arb"].id)
+    assert result.status == "dead"
+
+
+@pytest.mark.asyncio
+async def test_revalidate_reprices_exact_legs_not_best_available(db_session):
+    """Bug #5: revalidación usa los bookmakers originales del arb, aunque otros
+    libros tengan ahora mejores cuotas."""
+    fx = await _make_fixture(db_session)
+
+    # Agregar un tercer book con cuotas MUY buenas que NO está en arb.legs.
+    from app.models.bookmaker import Bookmaker as BM
+    from app.models.market import Odds as OddsM
+    bk_third = BM(key=f"third-{fx['user'].id}", name="Third", is_sharp=False)
+    db_session.add(bk_third)
+    await db_session.flush()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db_session.add_all([
+        OddsM(outcome_id=fx["out_home"].id, bookmaker_id=bk_third.id,
+              price=Decimal("5.00"), captured_at=now, source="test"),
+        OddsM(outcome_id=fx["out_away"].id, bookmaker_id=bk_third.id,
+              price=Decimal("5.00"), captured_at=now, source="test"),
+    ])
+    await db_session.commit()
+
+    svc = ArbitrageDetectionService()
+    result = await svc.revalidate_arb(db_session, fx["arb"].id)
+
+    # Los legs retornados deben corresponder a los bookmakers ORIGINALES
+    # (bk_pin + bk_bet), no al nuevo bk_third que tiene mejores cuotas.
+    assert result.current_legs is not None
+    booksellers_in_result = {leg["bookmaker"] for leg in result.current_legs}
+    original_bookmakers = {leg["bookmaker"] for leg in fx["arb"].legs}
+    assert booksellers_in_result == original_bookmakers
+    assert f"third-{fx['user'].id}" not in booksellers_in_result
+
+
+@pytest.mark.asyncio
 async def test_revalidate_dead_when_odds_degraded(db_session):
     fx = await _make_fixture(db_session)
     # Colapsa las cuotas a valores que anulan el arb.

@@ -48,6 +48,11 @@ class DailyPlan:
     target_coverage_pct: Decimal = Decimal("0")
     status: str = "empty"  # empty | unachievable | achievable | exceeded
     recommendation: str = ""
+    # Exposición acumulada por bookmaker (suma de stakes en los legs que usan
+    # ese libro a través de todos los arbs del plan). Permite al usuario ver
+    # si va a superar sus límites de cuenta por libro. Ver bug #8.
+    exposure_by_bookmaker: dict[str, Decimal] = field(default_factory=dict)
+    concentration_warnings: list[str] = field(default_factory=list)
 
 
 class PlanningService:
@@ -164,6 +169,18 @@ class PlanningService:
                 )
             )
 
+            # Acumula exposición por bookmaker: cada leg de este arb recibe
+            # stake × leg.stake_pct, que se suma a la exposición histórica del
+            # libro a través de TODOS los arbs planificados.
+            for leg in arb.legs or []:
+                bk = leg["bookmaker"]
+                leg_stake = (
+                    stake * Decimal(str(leg.get("stake_pct", 0)))
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                plan.exposure_by_bookmaker[bk] = (
+                    plan.exposure_by_bookmaker.get(bk, Decimal("0")) + leg_stake
+                )
+
             remaining_cap -= stake
             total_expected += expected
 
@@ -176,6 +193,21 @@ class PlanningService:
             plan.target_coverage_pct = (
                 total_expected / target_profit * Decimal("100")
             ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        # Warnings de concentración: marca libros con > 30% del cap como
+        # riesgo de exceder límites de cuenta. El 30% es arbitrario pero
+        # conservador — cuentas offshore suelen capar arbers a partir de
+        # volúmenes similares.
+        concentration_threshold = cap * Decimal("0.3")
+        for bk_key, exposure in plan.exposure_by_bookmaker.items():
+            if exposure >= concentration_threshold:
+                pct = (exposure / cap * Decimal("100")).quantize(
+                    Decimal("0.1"), rounding=ROUND_HALF_UP
+                )
+                plan.concentration_warnings.append(
+                    f"{bk_key}: {pct}% del cap concentrado — revisa límite "
+                    f"de cuenta en ese libro antes de ejecutar."
+                )
 
         if total_expected <= 0:
             plan.status = "empty"
@@ -196,6 +228,13 @@ class PlanningService:
                 f"Faltan {shortfall:.2f} {bankroll.currency} para el 1% completo. "
                 f"Opciones: bajar target, activar ligas opt-in (WNBA/NWSL/WSL), "
                 f"o esperar al próximo refresh de cuotas."
+            )
+
+        # Si hay concentración alta, anexar al recommendation para visibilidad.
+        if plan.concentration_warnings:
+            plan.recommendation += (
+                f" ⚠ Concentración alta: {len(plan.concentration_warnings)} "
+                f"libro(s) con >30% del cap asignado."
             )
 
         return plan

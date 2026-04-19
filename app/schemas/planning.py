@@ -27,3 +27,9 @@ class DailyPlanResponse(BaseModel):
     # empty | unachievable | achievable | exceeded
     status: str
     recommendation: str
+    # Exposición total por bookmaker a través de todos los legs del plan.
+    # Permite al usuario ver si un libro queda con mucho capital concentrado
+    # (ej. porque aparece en múltiples arbs) y evitar exceder límites de cuenta.
+    exposure_by_bookmaker: dict[str, float] = {}
+    # Warnings textuales: lista de libros con > 30% del cap asignado.
+    concentration_warnings: list[str] = []

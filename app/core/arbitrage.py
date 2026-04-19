@@ -4,6 +4,26 @@ Detector de oportunidades de arbitraje (surebets).
 Condición: si para un mercado (ej. H2H con 3 outcomes) tomamos la MEJOR
 cuota de cada outcome entre todas las casas, y la suma de probabilidades
 implícitas es < 1, existe arbitraje con ganancia garantizada.
+
+# Precisión numérica (bug #6)
+
+Este módulo opera en `float` porque las cuotas vienen como float desde
+JSON/Odds-API, y las operaciones aritméticas (sumas, divisiones) con float
+son suficientes para detección: error de redondeo < 1e-15, irrelevante
+frente al tamaño de las cuotas (~1-20).
+
+El boundary a Decimal ocurre al guardar en DB (`ArbitrageOpportunity`),
+donde siempre usamos `Decimal(str(float_value))` — preserva la
+representación del float exactamente sin perder precisión.
+Nunca usar `Decimal(float_value)` directamente.
+
+# Normalización de stake_pct (bug #7)
+
+Los `stake_pct` se computan como fracciones que idealmente suman 1.0, pero
+el redondeo de float puede dar 0.99999... o 1.00001. El último leg absorbe
+el residuo para que `sum(stake_pct) == 1.0` exacto. Sin esto, ejecutar el
+arb deja unos centavos sin asignar o los sobrestakea, invalidando
+marginalmente el balance del surebet.
 """
 
 from dataclasses import dataclass, field
@@ -108,19 +128,29 @@ def detect_arbitrage(
     if profit_pct < min_profit_pct:
         return None
 
-    # Calculate optimal stakes proportional to effective (post-commission) probabilities
-    # so that payout is equal across all outcomes. Raw odds stored in legs for transparency.
+    # Calcula stakes proporcionales a la prob. implícita efectiva (post-comisión)
+    # para que el payout sea equivalente en cada outcome.
+    # Paso 1: raw stake_pct = prob_implícita / sum(prob_implícita) para cada leg.
+    raw_stake_pcts = [
+        (1.0 / eff_odds) / total_implied for eff_odds, _ in effective_best
+    ]
+
+    # Paso 2: absorción del residuo de redondeo float en el último leg (bug #7).
+    # Sin esto, sum(stake_pct) puede ser 0.9999... o 1.0001, haciendo que al
+    # stakear con capital real queden centavos flotando o sobre-stakeados.
+    residual = 1.0 - sum(raw_stake_pcts)
+    raw_stake_pcts[-1] += residual
+
     legs = []
     for i, ((odds, bk_key), (eff_odds, _)) in enumerate(zip(best, effective_best)):
         eff_imp = 1.0 / eff_odds
-        stake_pct = eff_imp / total_implied  # fraction of total capital
         legs.append(ArbLeg(
             outcome_key=outcome_keys[i],
             outcome_name=outcome_names[i] if i < len(outcome_names) else outcome_keys[i],
             bookmaker_key=bk_key,
             best_odds=odds,
             implied_prob=round(eff_imp, 5),
-            stake_pct=round(stake_pct, 5),
+            stake_pct=round(raw_stake_pcts[i], 5),
         ))
 
     return ArbOpportunity(

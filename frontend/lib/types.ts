@@ -85,6 +85,8 @@ export interface DailyPlan {
   target_coverage_pct: number;
   status: "empty" | "unachievable" | "achievable" | "exceeded";
   recommendation: string;
+  exposure_by_bookmaker: Record<string, number>;
+  concentration_warnings: string[];
 }
 
 export interface Bankroll {

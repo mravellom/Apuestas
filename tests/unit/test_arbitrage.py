@@ -222,6 +222,38 @@ class TestArbOpportunityIsValid:
         assert not arb.is_valid
 
 
+class TestArbitrageStakeSumInvariant:
+    """Bug #7: sum(leg.stake_pct) debe ser exactamente 1.0."""
+
+    def test_stake_pcts_sum_to_one_h2h_three_outcomes(self):
+        odds = {
+            "bk_a": [2.10, 4.20, 4.50],
+            "bk_b": [2.20, 4.40, 4.60],
+            "bk_c": [2.25, 4.50, 4.80],
+        }
+        arb = detect_arbitrage(odds, ["home", "draw", "away"], min_profit_pct=0.1, min_bookmakers=3)
+        assert arb is not None
+        total = sum(leg.stake_pct for leg in arb.legs)
+        # El fix normaliza absorbiendo el residuo en el último leg.
+        # La tolerancia ~1e-4 permite el round(..., 5) en los valores guardados.
+        assert abs(total - 1.0) < 1e-4, f"stake_pct sum = {total}, esperado 1.0"
+
+    def test_stake_pcts_sum_to_one_with_commission(self):
+        odds = {
+            "bk_a": [2.10, 4.20, 4.50],
+            "bk_b": [2.20, 4.40, 4.60],
+            "bk_c": [2.25, 4.50, 4.80],
+        }
+        arb = detect_arbitrage(
+            odds, ["home", "draw", "away"],
+            min_profit_pct=0.1, min_bookmakers=3,
+            commission_by_bookmaker={"bk_a": 0.01, "bk_b": 0.01, "bk_c": 0.01},
+        )
+        assert arb is not None
+        total = sum(leg.stake_pct for leg in arb.legs)
+        assert abs(total - 1.0) < 1e-4
+
+
 class TestArbitrageWithCommission:
     """Arbs que pasarían sin comisión pero desaparecen o quedan al borde con broker."""
 

@@ -239,6 +239,56 @@ function PlanResult({
         {plan.recommendation}
       </p>
 
+      {plan.concentration_warnings.length > 0 ? (
+        <div className="mb-4 rounded border border-warn/40 bg-warn/10 p-3 text-sm text-warn">
+          <div className="mb-2 font-semibold">Concentración por libro</div>
+          <ul className="list-disc pl-5 space-y-1 text-xs">
+            {plan.concentration_warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {Object.keys(plan.exposure_by_bookmaker).length > 0 ? (
+        <details className="mb-4 rounded border border-border bg-bg/50 p-3 text-sm">
+          <summary className="cursor-pointer font-semibold text-white">
+            Exposición por bookmaker ({Object.keys(plan.exposure_by_bookmaker).length})
+          </summary>
+          <table className="mt-2 min-w-full divide-y divide-border text-xs">
+            <thead className="text-muted">
+              <tr>
+                <th className="px-2 py-1 text-left">Bookmaker</th>
+                <th className="px-2 py-1 text-right">Stake total</th>
+                <th className="px-2 py-1 text-right">% del cap</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {Object.entries(plan.exposure_by_bookmaker)
+                .sort((a, b) => b[1] - a[1])
+                .map(([bk, stake]) => {
+                  const pct = (stake / plan.daily_investment_cap) * 100;
+                  return (
+                    <tr key={bk}>
+                      <td className="px-2 py-1 text-white">{bk}</td>
+                      <td className="px-2 py-1 text-right font-mono">
+                        {formatMoney(stake, plan.currency)}
+                      </td>
+                      <td
+                        className={`px-2 py-1 text-right font-mono ${
+                          pct >= 30 ? "text-warn" : "text-muted"
+                        }`}
+                      >
+                        {pct.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </details>
+      ) : null}
+
       {plan.allocations.length === 0 ? (
         <p className="text-sm text-muted">
           Sin allocations. Ajusta parámetros o espera a nuevos arbs.

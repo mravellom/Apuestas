@@ -78,4 +78,8 @@ async def get_daily_plan(
         target_coverage_pct=float(plan.target_coverage_pct),
         status=plan.status,
         recommendation=plan.recommendation,
+        exposure_by_bookmaker={
+            k: float(v) for k, v in plan.exposure_by_bookmaker.items()
+        },
+        concentration_warnings=plan.concentration_warnings,
     )

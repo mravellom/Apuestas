@@ -156,13 +156,23 @@ class ArbitrageDetectionService:
         self, db: AsyncSession, arb_id: int
     ) -> RevalidationResult:
         """
-        Re-evalúa un arb contra las últimas cuotas en DB sin modificar estado.
+        Re-evalúa un arb EXACTAMENTE con los mismos legs originales (mismos
+        bookmakers, mismos outcomes) contra las últimas cuotas en DB.
 
-        Útil justo antes de ejecutar para evitar que el usuario apueste sobre
-        un arb que ya no existe (cuotas movieron mientras la alerta estaba
-        visible). No re-fetchea The Odds API — confía en que el job de fetch
-        está corriendo. Si el job se cae, esto fallará igual que la detección
-        normal.
+        Semántica: "¿Sigue siendo ejecutable ESTE arb específico?"
+          - Si un bookmaker dejó de cotizar ese outcome o su última cuota es
+            muy vieja (> max_odds_age_minutes), el leg no se puede reprecear
+            y el arb se clasifica DEAD.
+          - Si todos los legs tienen cuotas frescas, se recalcula profit_pct
+            con las cuotas actuales del mismo set de (book, outcome) y se
+            compara contra el detected_profit_pct original.
+
+        Esta es la corrección del bug #5. Antes hacíamos una re-detección
+        completa del market (`_detect` con min_bookmakers=1, min_profit_pct=0)
+        que podía retornar un arb distinto al original — ej. con otro libro
+        que inesperadamente aparecía con mejor cuota. Eso era confuso porque
+        la "revalidación" devolvía legs que el usuario nunca detectó. Ahora
+        reprecea los mismos legs sin sustituir libros.
         """
         arb = await db.get(ArbitrageOpportunity, arb_id)
         if arb is None:
@@ -172,8 +182,7 @@ class ArbitrageDetectionService:
         age_seconds = int((now - arb.detected_at).total_seconds())
         detected_pct = float(arb.profit_pct)
 
-        market = await db.get(Market, arb.market_id)
-        if market is None:
+        if not arb.legs:
             return RevalidationResult(
                 status="dead",
                 detected_profit_pct=detected_pct,
@@ -181,15 +190,38 @@ class ArbitrageDetectionService:
                 age_seconds=age_seconds,
             )
 
-        commission_map = await self._load_commission_map(db)
-
-        # Para revalidar, relajamos los umbrales de filtro (min_bookmakers y
-        # min_profit_pct). No estamos detectando un nuevo arb — estamos
-        # verificando que el que ya detectamos sigue teniendo valor positivo.
+        # Carga los outcomes del market para mapear bookmaker_key + outcome_key
+        # → outcome_id. Necesitamos esos IDs para buscar odds específicos.
         outcomes = (
-            await db.execute(select(Outcome).where(Outcome.market_id == market.id))
+            await db.execute(select(Outcome).where(Outcome.market_id == arb.market_id))
         ).scalars().all()
-        if not outcomes:
+        outcomes_by_key = {o.key: o for o in outcomes}
+
+        # Verifica que los outcomes referenciados en arb.legs sigan existiendo.
+        for leg in arb.legs:
+            if leg["outcome"] not in outcomes_by_key:
+                return RevalidationResult(
+                    status="dead",
+                    detected_profit_pct=detected_pct,
+                    current_profit_pct=0.0,
+                    age_seconds=age_seconds,
+                )
+
+        # Carga bookmakers activos referenciados en los legs, con broker eager
+        # para resolver comisión.
+        bk_keys = {leg["bookmaker"] for leg in arb.legs}
+        bk_rows = (
+            await db.execute(
+                select(Bookmaker)
+                .options(selectinload(Bookmaker.broker))
+                .where(Bookmaker.key.in_(bk_keys), Bookmaker.active.is_(True))
+            )
+        ).scalars().all()
+        bk_map = {b.key: b for b in bk_rows}
+
+        # Si algún bookmaker del arb original fue marcado inactivo, el arb
+        # no es ejecutable con la config actual — dead.
+        if len(bk_map) != len(bk_keys):
             return RevalidationResult(
                 status="dead",
                 detected_profit_pct=detected_pct,
@@ -197,19 +229,57 @@ class ArbitrageDetectionService:
                 age_seconds=age_seconds,
             )
 
-        odds_by_bookmaker = await self._get_latest_odds_by_bookmaker(db, outcomes)
-        from app.core.arbitrage import detect_arbitrage as _detect
+        cutoff = now - timedelta(minutes=self.max_odds_age_minutes)
 
-        current = _detect(
-            odds_by_bookmaker=odds_by_bookmaker,
-            outcome_keys=[o.key for o in outcomes],
-            outcome_names=[o.name for o in outcomes],
-            min_profit_pct=0.0,
-            min_bookmakers=1,
-            commission_by_bookmaker=commission_map,
-        )
+        # Re-precea cada leg con su última cuota específica.
+        repriced: list[dict] = []
+        effective_implied_sum = 0.0
 
-        if current is None:
+        for leg in arb.legs:
+            outcome = outcomes_by_key[leg["outcome"]]
+            bookmaker = bk_map[leg["bookmaker"]]
+
+            latest_odds = (
+                await db.execute(
+                    select(Odds.price)
+                    .where(
+                        Odds.outcome_id == outcome.id,
+                        Odds.bookmaker_id == bookmaker.id,
+                        Odds.captured_at >= cutoff,
+                    )
+                    .order_by(Odds.captured_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+            if latest_odds is None or float(latest_odds) <= 1.0:
+                # Ese leg no tiene cuota fresca — arb no es ejecutable.
+                return RevalidationResult(
+                    status="dead",
+                    detected_profit_pct=detected_pct,
+                    current_profit_pct=0.0,
+                    age_seconds=age_seconds,
+                )
+
+            odds_f = float(latest_odds)
+            # Comisión efectiva: book o broker.
+            commission = float(bookmaker.commission_pct or 0)
+            if commission == 0 and bookmaker.broker is not None:
+                commission = float(bookmaker.broker.default_commission_pct or 0)
+
+            eff_odds = 1.0 + (odds_f - 1.0) * (1.0 - commission)
+            effective_implied_sum += 1.0 / eff_odds
+
+            repriced.append({
+                "outcome": leg["outcome"],
+                "outcome_name": leg.get("outcome_name", leg["outcome"]),
+                "bookmaker": leg["bookmaker"],
+                "odds": odds_f,
+                "stake_pct": (1.0 / eff_odds),  # se normaliza abajo
+            })
+
+        if effective_implied_sum >= 1.0:
+            # Suma de probabilidades implícitas >= 1 → no hay arb. Dead.
             return RevalidationResult(
                 status="dead",
                 detected_profit_pct=detected_pct,
@@ -217,10 +287,16 @@ class ArbitrageDetectionService:
                 age_seconds=age_seconds,
             )
 
-        current_pct = float(current.profit_pct)
-        # Clasificación relativa: comparamos contra el pct detectado original,
-        # no contra 0, porque un arb de 3% que baja a 2% sigue siendo ejecutable
-        # mientras que uno de 0.6% que baja a 0.4% cruza el umbral de ruido.
+        current_pct = (1.0 / effective_implied_sum - 1.0) * 100.0
+
+        # Normaliza stake_pct para que sumen 1 (con absorción del residuo en
+        # el último leg — ver fix de bug #7 en detect_arbitrage).
+        for leg_d in repriced:
+            leg_d["stake_pct"] = leg_d["stake_pct"] / effective_implied_sum
+        residual = 1.0 - sum(leg_d["stake_pct"] for leg_d in repriced)
+        repriced[-1]["stake_pct"] += residual
+
+        # Clasificación relativa al profit original detectado.
         ratio = current_pct / detected_pct if detected_pct > 0 else 0
         if ratio >= 0.8:
             status = "alive"
@@ -234,16 +310,7 @@ class ArbitrageDetectionService:
             detected_profit_pct=detected_pct,
             current_profit_pct=current_pct,
             age_seconds=age_seconds,
-            current_legs=[
-                {
-                    "outcome": leg.outcome_key,
-                    "outcome_name": leg.outcome_name,
-                    "bookmaker": leg.bookmaker_key,
-                    "odds": leg.best_odds,
-                    "stake_pct": leg.stake_pct,
-                }
-                for leg in current.legs
-            ],
+            current_legs=repriced,
         )
 
     async def _load_commission_map(self, db: AsyncSession) -> dict[str, float]:
