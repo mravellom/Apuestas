@@ -367,6 +367,154 @@ async def test_execute_raises_dead_arb_error_when_odds_degraded(db_session):
 
 
 @pytest.mark.asyncio
+async def test_exposure_zero_when_all_pending(db_session):
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+
+    exp = await svc.compute_exposure(
+        db_session, arbitrage_id=fx["arb"].id, user_id=fx["user"].id
+    )
+    # Sin legs placed, exposure es cero en todos los escenarios.
+    assert exp.total_placed_stake == Decimal("0.00")
+    assert exp.worst_case_pnl == Decimal("0.00")
+    assert exp.best_case_pnl == Decimal("0.00")
+    assert not exp.is_partial_fill
+    assert not exp.any_rejected
+    assert not exp.all_placed
+    assert all(not s.covered for s in exp.scenarios)
+
+
+@pytest.mark.asyncio
+async def test_exposure_balanced_when_all_placed(db_session):
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+    for leg in plan.legs:
+        await svc.mark_leg_placed(
+            db_session,
+            bet_id=leg.bet_id,
+            user_id=fx["user"].id,
+            odds_at_placement=leg.target_odds,
+        )
+
+    exp = await svc.compute_exposure(
+        db_session, arbitrage_id=fx["arb"].id, user_id=fx["user"].id
+    )
+    assert exp.all_placed
+    assert not exp.is_partial_fill
+    # Arb genuino: worst_case debe ser positivo (o casi) tras comisión.
+    # Con 3% profit bruto y 1% commission en Pinnacle, sigue positivo.
+    assert exp.worst_case_pnl > Decimal("-100")  # margen de seguridad por redondeo
+    assert exp.best_case_pnl > Decimal("-100")
+    # Ambos outcomes cubiertos.
+    assert all(s.covered for s in exp.scenarios)
+
+
+@pytest.mark.asyncio
+async def test_exposure_partial_fill_shows_unilateral_risk(db_session):
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+    # Placa solo el primer leg; rechaza el segundo.
+    await svc.mark_leg_placed(
+        db_session,
+        bet_id=plan.legs[0].bet_id,
+        user_id=fx["user"].id,
+        odds_at_placement=plan.legs[0].target_odds,
+    )
+    await svc.mark_leg_rejected(
+        db_session, bet_id=plan.legs[1].bet_id, user_id=fx["user"].id
+    )
+
+    exp = await svc.compute_exposure(
+        db_session, arbitrage_id=fx["arb"].id, user_id=fx["user"].id
+    )
+    assert exp.is_partial_fill
+    assert exp.any_rejected
+    assert not exp.all_placed
+    # Solo un leg placed: ganamos si gana su outcome, perdemos si gana el otro.
+    covered_scenarios = [s for s in exp.scenarios if s.covered]
+    uncovered = [s for s in exp.scenarios if not s.covered]
+    assert len(covered_scenarios) == 1
+    assert len(uncovered) == 1
+    assert covered_scenarios[0].pnl > Decimal("0")  # gana si corre a favor
+    assert uncovered[0].pnl < Decimal("0")  # pierde todo el stake si corre en contra
+
+
+@pytest.mark.asyncio
+async def test_exposure_suggests_replacement_for_rejected_leg(db_session):
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    # Agregar un bookmaker extra con odds para el mismo outcome del leg que será rejected.
+    # El leg[1] del arb es "away" en bk_bet; creamos un tercer book con odds para away.
+    bk_alt = Bookmaker(key=f"alt-{fx['user'].id}", name="Altbook", is_sharp=False)
+    db_session.add(bk_alt)
+    await db_session.flush()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db_session.add(
+        Odds(
+            outcome_id=fx["out_away"].id,
+            bookmaker_id=bk_alt.id,
+            price=Decimal("2.00"),
+            captured_at=now,
+            source="test",
+        )
+    )
+    await db_session.commit()
+
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+    await svc.mark_leg_placed(
+        db_session,
+        bet_id=plan.legs[0].bet_id,
+        user_id=fx["user"].id,
+        odds_at_placement=plan.legs[0].target_odds,
+    )
+    await svc.mark_leg_rejected(
+        db_session, bet_id=plan.legs[1].bet_id, user_id=fx["user"].id
+    )
+
+    exp = await svc.compute_exposure(
+        db_session, arbitrage_id=fx["arb"].id, user_id=fx["user"].id
+    )
+    assert len(exp.replacement_suggestions) == 1
+    sug = exp.replacement_suggestions[0]
+    assert any(
+        a.bookmaker_key == bk_alt.key and a.odds == Decimal("2.0000")
+        for a in sug.alternatives
+    )
+
+
+@pytest.mark.asyncio
 async def test_settle_leg_lost_debits_bankroll(db_session):
     fx = await _make_fixture(db_session)
     svc = ExecutionService()

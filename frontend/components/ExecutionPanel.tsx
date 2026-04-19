@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   executeArbitrage,
+  getArbitrageExposure,
   listBankrolls,
   listBets,
   placeBet,
@@ -16,9 +17,11 @@ import type {
   Bankroll,
   Bet,
   ExecutionPlan,
+  ExposureSummary,
   LegInstruction,
   RevalidationResult,
 } from "@/lib/types";
+import { ExposurePanel } from "@/components/ExposurePanel";
 
 interface Props {
   arb: Arbitrage;
@@ -43,6 +46,7 @@ export function ExecutionPanel({ arb }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [revalidation, setRevalidation] = useState<RevalidationResult | null>(null);
   const [revalidating, setRevalidating] = useState(false);
+  const [exposure, setExposure] = useState<ExposureSummary | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -83,10 +87,14 @@ export function ExecutionPanel({ arb }: Props) {
     try {
       const p = await executeArbitrage(arb.id, bankrollId, totalStake, forceIfStale);
       setPlan(p);
-      const currentBets = await listBets({ arbitrageId: arb.id });
+      const [currentBets, exp] = await Promise.all([
+        listBets({ arbitrageId: arb.id }),
+        getArbitrageExposure(arb.id),
+      ]);
       const byId: Record<number, Bet> = {};
       for (const b of currentBets) byId[b.id] = b;
       setBets(byId);
+      setExposure(exp);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error ejecutando");
     } finally {
@@ -94,12 +102,16 @@ export function ExecutionPanel({ arb }: Props) {
     }
   }
 
-  async function refreshBet(betId: number) {
+  async function refreshBet(_betId: number) {
     try {
-      const all = await listBets({ arbitrageId: arb.id });
+      const [all, exp] = await Promise.all([
+        listBets({ arbitrageId: arb.id }),
+        getArbitrageExposure(arb.id),
+      ]);
       const byId: Record<number, Bet> = {};
       for (const b of all) byId[b.id] = b;
       setBets(byId);
+      setExposure(exp);
     } catch {
       /* non-fatal */
     }
@@ -211,7 +223,10 @@ export function ExecutionPanel({ arb }: Props) {
           </p>
         </div>
       ) : (
-        <ExecutionProgress plan={plan} bets={bets} onChanged={() => refreshBet(0)} />
+        <>
+          <ExecutionProgress plan={plan} bets={bets} onChanged={() => refreshBet(0)} />
+          {exposure ? <ExposurePanel exposure={exposure} /> : null}
+        </>
       )}
     </div>
   );

@@ -216,6 +216,58 @@ class TestBetLifecycle:
         assert "not owned" in r.json()["detail"]
 
 
+class TestExposureEndpoint:
+    async def test_exposure_reports_partial_fill(
+        self, client, auth_headers, db_session, test_user
+    ):
+        fx = await _seed_arb_and_bankroll(db_session, test_user.id)
+        r = await client.post(
+            f"/api/v1/arbitrage/{fx['arb'].id}/execute",
+            headers=auth_headers,
+            json={"bankroll_id": fx["bankroll"].id, "total_stake": 1000.0},
+        )
+        legs = r.json()["legs"]
+
+        # Placa uno, rechaza otro.
+        await client.patch(
+            f"/api/v1/bets/{legs[0]['bet_id']}/place",
+            headers=auth_headers,
+            json={"odds_at_placement": 2.10},
+        )
+        await client.patch(
+            f"/api/v1/bets/{legs[1]['bet_id']}/reject",
+            headers=auth_headers,
+            json={"reason": "Book limited"},
+        )
+
+        r = await client.get(
+            f"/api/v1/arbitrage/{fx['arb'].id}/exposure", headers=auth_headers
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["is_partial_fill"] is True
+        assert body["any_rejected"] is True
+        assert body["all_placed"] is False
+        assert len(body["scenarios"]) == 2
+        # Exactamente un escenario cubierto (el del leg placed).
+        assert sum(1 for s in body["scenarios"] if s["covered"]) == 1
+
+    async def test_exposure_requires_ownership(
+        self, client, auth_headers, db_session, premium_user
+    ):
+        # Crea arb bajo premium_user; test_user intenta leer exposure.
+        fx = await _seed_arb_and_bankroll(db_session, premium_user.id)
+        r = await client.get(
+            f"/api/v1/arbitrage/{fx['arb'].id}/exposure", headers=auth_headers
+        )
+        # El arb existe pero test_user no tiene bets en él → exposure vacío
+        # pero el endpoint no debe filtrar por bets del otro user.
+        assert r.status_code == 200
+        body = r.json()
+        assert body["legs"] == []
+        assert body["total_placed_stake"] == 0
+
+
 class TestListBets:
     async def test_list_filters_by_user(self, client, auth_headers, db_session, test_user):
         fx = await _seed_arb_and_bankroll(db_session, test_user.id)

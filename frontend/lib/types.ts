@@ -112,6 +112,53 @@ export interface RevalidationResult {
   current_legs: ArbitrageLeg[] | null;
 }
 
+export interface OutcomeScenario {
+  outcome_key: string;
+  outcome_name: string;
+  pnl: number;
+  covered: boolean;
+}
+
+export interface LegSummary {
+  bet_id: number;
+  outcome_key: string;
+  outcome_name: string;
+  bookmaker_key: string;
+  bookmaker_name: string;
+  stake_amount: number;
+  status: BetStatus;
+  odds_effective: number | null;
+  commission_pct: number;
+}
+
+export interface ReplacementOption {
+  bookmaker_key: string;
+  bookmaker_name: string;
+  odds: number;
+  commission_pct: number;
+}
+
+export interface ReplacementSuggestion {
+  outcome_key: string;
+  outcome_name: string;
+  rejected_bookmaker_key: string;
+  alternatives: ReplacementOption[];
+}
+
+export interface ExposureSummary {
+  arbitrage_id: number;
+  currency: string;
+  is_partial_fill: boolean;
+  any_rejected: boolean;
+  all_placed: boolean;
+  total_placed_stake: number;
+  worst_case_pnl: number;
+  best_case_pnl: number;
+  scenarios: OutcomeScenario[];
+  legs: LegSummary[];
+  replacement_suggestions: ReplacementSuggestion[];
+}
+
 export interface Bet {
   id: number;
   arbitrage_id: number | null;

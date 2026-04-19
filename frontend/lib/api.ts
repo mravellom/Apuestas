@@ -9,6 +9,7 @@ import type {
   BetStatus,
   CurrentUser,
   ExecutionPlan,
+  ExposureSummary,
   LoginResponse,
   PaperBet,
   PaperStats,
@@ -133,6 +134,10 @@ export async function createBankroll(input: {
 
 export async function revalidateArbitrage(arbId: number): Promise<RevalidationResult> {
   return request<RevalidationResult>(`/api/v1/arbitrage/${arbId}/revalidate`);
+}
+
+export async function getArbitrageExposure(arbId: number): Promise<ExposureSummary> {
+  return request<ExposureSummary>(`/api/v1/arbitrage/${arbId}/exposure`);
 }
 
 export async function executeArbitrage(

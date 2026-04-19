@@ -48,6 +48,53 @@ class SettleBetRequest(BaseModel):
     actual_payout: float = Field(ge=0)
 
 
+class OutcomeScenarioResponse(BaseModel):
+    outcome_key: str
+    outcome_name: str
+    pnl: float
+    covered: bool
+
+
+class LegSummaryResponse(BaseModel):
+    bet_id: int
+    outcome_key: str
+    outcome_name: str
+    bookmaker_key: str
+    bookmaker_name: str
+    stake_amount: float
+    status: str
+    odds_effective: float | None
+    commission_pct: float
+
+
+class ReplacementOptionResponse(BaseModel):
+    bookmaker_key: str
+    bookmaker_name: str
+    odds: float
+    commission_pct: float
+
+
+class ReplacementSuggestionResponse(BaseModel):
+    outcome_key: str
+    outcome_name: str
+    rejected_bookmaker_key: str
+    alternatives: list[ReplacementOptionResponse]
+
+
+class ExposureResponse(BaseModel):
+    arbitrage_id: int
+    currency: str
+    is_partial_fill: bool
+    any_rejected: bool
+    all_placed: bool
+    total_placed_stake: float
+    worst_case_pnl: float
+    best_case_pnl: float
+    scenarios: list[OutcomeScenarioResponse]
+    legs: list[LegSummaryResponse]
+    replacement_suggestions: list[ReplacementSuggestionResponse]
+
+
 class BetResponse(BaseModel):
     id: int
     arbitrage_id: int | None

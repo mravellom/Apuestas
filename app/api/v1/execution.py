@@ -19,9 +19,14 @@ from app.schemas.execution import (
     BetResponse,
     ExecuteArbitrageRequest,
     ExecutionPlanResponse,
+    ExposureResponse,
     LegInstructionResponse,
+    LegSummaryResponse,
+    OutcomeScenarioResponse,
     PlaceBetRequest,
     RejectBetRequest,
+    ReplacementOptionResponse,
+    ReplacementSuggestionResponse,
     SettleBetRequest,
 )
 from app.services.execution_service import (
@@ -109,6 +114,76 @@ async def execute_arbitrage(
                 commission_pct=float(leg.commission_pct),
             )
             for leg in plan.legs
+        ],
+    )
+
+
+@router.get("/arbitrage/{arbitrage_id}/exposure", response_model=ExposureResponse)
+async def get_arbitrage_exposure(
+    arbitrage_id: int,
+    db: DB,
+    user: CurrentUser,
+):
+    """
+    Exposición actual del usuario sobre este arb: P&L por escenario de outcome,
+    detección de partial fill, sugerencias de rebalanceo por leg rejected.
+    """
+    svc = ExecutionService()
+    try:
+        exp = await svc.compute_exposure(
+            db, arbitrage_id=arbitrage_id, user_id=user.id
+        )
+    except ExecutionError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    return ExposureResponse(
+        arbitrage_id=exp.arbitrage_id,
+        currency=exp.currency,
+        is_partial_fill=exp.is_partial_fill,
+        any_rejected=exp.any_rejected,
+        all_placed=exp.all_placed,
+        total_placed_stake=float(exp.total_placed_stake),
+        worst_case_pnl=float(exp.worst_case_pnl),
+        best_case_pnl=float(exp.best_case_pnl),
+        scenarios=[
+            OutcomeScenarioResponse(
+                outcome_key=s.outcome_key,
+                outcome_name=s.outcome_name,
+                pnl=float(s.pnl),
+                covered=s.covered,
+            )
+            for s in exp.scenarios
+        ],
+        legs=[
+            LegSummaryResponse(
+                bet_id=l.bet_id,
+                outcome_key=l.outcome_key,
+                outcome_name=l.outcome_name,
+                bookmaker_key=l.bookmaker_key,
+                bookmaker_name=l.bookmaker_name,
+                stake_amount=float(l.stake_amount),
+                status=l.status,
+                odds_effective=float(l.odds_effective) if l.odds_effective is not None else None,
+                commission_pct=float(l.commission_pct),
+            )
+            for l in exp.legs
+        ],
+        replacement_suggestions=[
+            ReplacementSuggestionResponse(
+                outcome_key=r.outcome_key,
+                outcome_name=r.outcome_name,
+                rejected_bookmaker_key=r.rejected_bookmaker_key,
+                alternatives=[
+                    ReplacementOptionResponse(
+                        bookmaker_key=a.bookmaker_key,
+                        bookmaker_name=a.bookmaker_name,
+                        odds=float(a.odds),
+                        commission_pct=float(a.commission_pct),
+                    )
+                    for a in r.alternatives
+                ],
+            )
+            for r in exp.replacement_suggestions
         ],
     )
 

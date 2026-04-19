@@ -15,7 +15,7 @@ Flujo manual (único soportado hoy):
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
-from app.models.market import Market, MarketType, Outcome
+from app.models.market import Market, MarketType, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import BetTracking
 from app.models.team import Team
@@ -67,6 +67,60 @@ class LegInstruction:
     target_odds: Decimal
     min_acceptable_odds: Decimal
     commission_pct: Decimal
+
+
+@dataclass
+class OutcomeScenario:
+    """P&L si `outcome_key` termina ganando, dado el estado actual de legs placed."""
+    outcome_key: str
+    outcome_name: str
+    pnl: Decimal
+    covered: bool  # tenemos un leg placed que gana si este outcome wins
+
+
+@dataclass
+class LegSummary:
+    bet_id: int
+    outcome_key: str
+    outcome_name: str
+    bookmaker_key: str
+    bookmaker_name: str
+    stake_amount: Decimal
+    status: str
+    odds_effective: Decimal | None  # placement si placed, detection si aún pending
+    commission_pct: Decimal
+
+
+@dataclass
+class ReplacementOption:
+    bookmaker_key: str
+    bookmaker_name: str
+    odds: Decimal
+    commission_pct: Decimal
+
+
+@dataclass
+class ReplacementSuggestion:
+    """Alternativas para cubrir un leg que quedó rejected."""
+    outcome_key: str
+    outcome_name: str
+    rejected_bookmaker_key: str
+    alternatives: list[ReplacementOption] = field(default_factory=list)
+
+
+@dataclass
+class ExposureSummary:
+    arbitrage_id: int
+    currency: str
+    is_partial_fill: bool
+    any_rejected: bool
+    all_placed: bool
+    total_placed_stake: Decimal
+    worst_case_pnl: Decimal
+    best_case_pnl: Decimal
+    scenarios: list[OutcomeScenario] = field(default_factory=list)
+    legs: list[LegSummary] = field(default_factory=list)
+    replacement_suggestions: list[ReplacementSuggestion] = field(default_factory=list)
 
 
 @dataclass
@@ -313,6 +367,226 @@ class ExecutionService:
 
         await db.commit()
         return bet
+
+    async def compute_exposure(
+        self,
+        db: AsyncSession,
+        *,
+        arbitrage_id: int,
+        user_id,
+        replacement_max_age_minutes: int = 30,
+    ) -> ExposureSummary:
+        """
+        Calcula P&L por escenario para los legs ya placed, detecta partial fill,
+        y sugiere bookmakers alternativos para los legs rejected.
+
+        Regla del P&L por leg placed:
+          Si leg.outcome gana: +stake * (odds_placement - 1) * (1 - commission)
+          Si leg.outcome pierde: -stake
+        Legs pending/rejected no contribuyen al P&L actual (no hay dinero puesto).
+        """
+        arb = await db.get(ArbitrageOpportunity, arbitrage_id)
+        if arb is None:
+            raise ExecutionError(f"Arbitrage {arbitrage_id} not found")
+
+        bets = (
+            await db.execute(
+                select(BetTracking)
+                .options(selectinload(BetTracking.bookmaker).selectinload(Bookmaker.broker))
+                .where(
+                    BetTracking.arbitrage_id == arbitrage_id,
+                    BetTracking.user_id == user_id,
+                )
+            )
+        ).scalars().all()
+
+        # Outcomes del mercado — define el espacio de escenarios posibles.
+        outcomes = (
+            await db.execute(
+                select(Outcome).where(Outcome.market_id == arb.market_id)
+            )
+        ).scalars().all()
+        outcome_by_id = {o.id: o for o in outcomes}
+
+        # Moneda: asumimos todos los legs del mismo arb comparten bankroll.
+        currency = ""
+        if bets:
+            bankroll = await db.get(Bankroll, bets[0].bankroll_id)
+            if bankroll is not None:
+                currency = bankroll.currency
+
+        leg_summaries: list[LegSummary] = []
+        placed_by_outcome: dict[int, BetTracking] = {}
+        total_placed_stake = Decimal("0")
+        any_rejected = False
+        any_placed = False
+        any_pending = False
+
+        for bet in bets:
+            if bet.status in ("placed", "confirmed"):
+                any_placed = True
+                placed_by_outcome[bet.outcome_id] = bet
+                total_placed_stake += bet.stake_amount
+            elif bet.status == "rejected":
+                any_rejected = True
+            elif bet.status == "pending":
+                any_pending = True
+
+            outcome = outcome_by_id.get(bet.outcome_id)
+            odds_used: Decimal | None = (
+                bet.odds_at_placement
+                if bet.odds_at_placement is not None
+                else bet.odds_at_detection
+            )
+            leg_summaries.append(
+                LegSummary(
+                    bet_id=bet.id,
+                    outcome_key=outcome.key if outcome else "",
+                    outcome_name=outcome.name if outcome else "",
+                    bookmaker_key=bet.bookmaker.key,
+                    bookmaker_name=bet.bookmaker.name,
+                    stake_amount=bet.stake_amount,
+                    status=bet.status,
+                    odds_effective=odds_used,
+                    commission_pct=bet.commission_pct,
+                )
+            )
+
+        # P&L por escenario: un outcome wins a la vez.
+        scenarios: list[OutcomeScenario] = []
+        for outcome in outcomes:
+            pnl = Decimal("0")
+            for bet in placed_by_outcome.values():
+                odds = bet.odds_at_placement or bet.odds_at_detection or Decimal("0")
+                if bet.outcome_id == outcome.id:
+                    # Leg ganador: paga (odds-1) × stake × (1 − comisión)
+                    pnl += bet.stake_amount * (odds - Decimal("1")) * (
+                        Decimal("1") - (bet.commission_pct or Decimal("0"))
+                    )
+                else:
+                    # Leg perdedor: se pierde el stake completo.
+                    pnl -= bet.stake_amount
+            scenarios.append(
+                OutcomeScenario(
+                    outcome_key=outcome.key,
+                    outcome_name=outcome.name,
+                    pnl=pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                    covered=outcome.id in placed_by_outcome,
+                )
+            )
+
+        worst = min((s.pnl for s in scenarios), default=Decimal("0"))
+        best = max((s.pnl for s in scenarios), default=Decimal("0"))
+
+        # Partial fill: hay legs placed Y legs rejected simultáneamente.
+        is_partial_fill = any_placed and any_rejected
+
+        # All placed: todos los N legs del arb original están placed o confirmed.
+        expected_leg_count = len(arb.legs) if arb.legs else 0
+        placed_count = len(placed_by_outcome)
+        all_placed = expected_leg_count > 0 and placed_count == expected_leg_count
+
+        # Sugerencias de reemplazo para legs rejected (solo si hay partial fill).
+        suggestions: list[ReplacementSuggestion] = []
+        if is_partial_fill:
+            suggestions = await self._find_replacement_suggestions(
+                db,
+                bets=bets,
+                outcomes=outcome_by_id,
+                max_age_minutes=replacement_max_age_minutes,
+            )
+
+        return ExposureSummary(
+            arbitrage_id=arbitrage_id,
+            currency=currency,
+            is_partial_fill=is_partial_fill,
+            any_rejected=any_rejected,
+            all_placed=all_placed,
+            total_placed_stake=total_placed_stake.quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            ),
+            worst_case_pnl=worst,
+            best_case_pnl=best,
+            scenarios=scenarios,
+            legs=leg_summaries,
+            replacement_suggestions=suggestions,
+        )
+
+    async def _find_replacement_suggestions(
+        self,
+        db: AsyncSession,
+        *,
+        bets: list[BetTracking],
+        outcomes: dict[int, Outcome],
+        max_age_minutes: int,
+    ) -> list[ReplacementSuggestion]:
+        """
+        Por cada leg rejected, sugiere alternativas: otros libros con cuotas
+        recientes para ese mismo outcome, excluyendo los bookmakers ya usados
+        en otros legs del arb (evita sugerir el propio libro del leg rejected
+        y evita sugerir el de otra pata — que generaría conflicto de cuenta).
+        """
+        rejected_legs = [b for b in bets if b.status == "rejected"]
+        if not rejected_legs:
+            return []
+
+        used_bookmaker_ids = {b.bookmaker_id for b in bets}
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            minutes=max_age_minutes
+        )
+
+        suggestions: list[ReplacementSuggestion] = []
+        for leg in rejected_legs:
+            outcome = outcomes.get(leg.outcome_id)
+            if outcome is None:
+                continue
+
+            # Últimas cuotas para este outcome de books no usados ya.
+            rows = (
+                await db.execute(
+                    select(Odds, Bookmaker)
+                    .join(Bookmaker, Bookmaker.id == Odds.bookmaker_id)
+                    .options(selectinload(Bookmaker.broker))
+                    .where(
+                        Odds.outcome_id == leg.outcome_id,
+                        Odds.captured_at >= cutoff,
+                        ~Bookmaker.id.in_(used_bookmaker_ids),
+                    )
+                    .order_by(Odds.price.desc(), Odds.captured_at.desc())
+                )
+            ).all()
+
+            # Dedup: una entrada por bookmaker (la mejor cuota más reciente).
+            seen: set[int] = set()
+            alternatives: list[ReplacementOption] = []
+            for odds_row, bm in rows:
+                if bm.id in seen:
+                    continue
+                seen.add(bm.id)
+                commission = bm.commission_pct or Decimal("0")
+                if commission == 0 and bm.broker is not None:
+                    commission = bm.broker.default_commission_pct or Decimal("0")
+                alternatives.append(
+                    ReplacementOption(
+                        bookmaker_key=bm.key,
+                        bookmaker_name=bm.name,
+                        odds=odds_row.price,
+                        commission_pct=commission,
+                    )
+                )
+                if len(alternatives) >= 3:
+                    break
+
+            suggestions.append(
+                ReplacementSuggestion(
+                    outcome_key=outcome.key,
+                    outcome_name=outcome.name,
+                    rejected_bookmaker_key=leg.bookmaker.key,
+                    alternatives=alternatives,
+                )
+            )
+
+        return suggestions
 
     async def _get_owned_bet(
         self, db: AsyncSession, bet_id: int, user_id
