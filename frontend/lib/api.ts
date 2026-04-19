@@ -8,6 +8,7 @@ import type {
   BetResult,
   BetStatus,
   CurrentUser,
+  DailyPlan,
   ExecutionPlan,
   ExposureSummary,
   LoginResponse,
@@ -138,6 +139,24 @@ export async function revalidateArbitrage(arbId: number): Promise<RevalidationRe
 
 export async function getArbitrageExposure(arbId: number): Promise<ExposureSummary> {
   return request<ExposureSummary>(`/api/v1/arbitrage/${arbId}/exposure`);
+}
+
+export interface DailyPlanParams {
+  bankrollId: number;
+  dailyCap?: number;
+  targetPct?: number;
+  maxStakePerArbPct?: number;
+}
+
+export async function getDailyPlan(params: DailyPlanParams): Promise<DailyPlan> {
+  const query = new URLSearchParams();
+  query.set("bankroll_id", String(params.bankrollId));
+  if (params.dailyCap !== undefined) query.set("daily_cap", String(params.dailyCap));
+  if (params.targetPct !== undefined) query.set("target_pct", String(params.targetPct));
+  if (params.maxStakePerArbPct !== undefined) {
+    query.set("max_stake_per_arb_pct", String(params.maxStakePerArbPct));
+  }
+  return request<DailyPlan>(`/api/v1/planning/daily?${query.toString()}`);
 }
 
 export async function executeArbitrage(

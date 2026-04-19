@@ -12,6 +12,8 @@ class UserConfigResponse(BaseModel):
     preferred_leagues: list[str] | None
     risk_tolerance: str
     default_currency: str = "USD"
+    default_daily_target_pct: float = 1.0
+    default_max_stake_per_arb_pct: float = 15.0
 
     model_config = {"from_attributes": True}
 
@@ -26,6 +28,8 @@ class UserConfigUpdate(BaseModel):
     preferred_leagues: list[str] | None = None
     risk_tolerance: str | None = None
     default_currency: str | None = Field(None, min_length=3, max_length=3)
+    default_daily_target_pct: float | None = Field(None, ge=0.0, le=100.0)
+    default_max_stake_per_arb_pct: float | None = Field(None, ge=0.1, le=100.0)
 
 
 class BankrollResponse(BaseModel):

@@ -25,6 +25,12 @@ import { ExposurePanel } from "@/components/ExposurePanel";
 
 interface Props {
   arb: Arbitrage;
+  /**
+   * Stake y bankroll sugeridos por el planificador. Si vienen, se prellenan
+   * los campos y se expande el flow directo a ejecutar.
+   */
+  prefillStake?: number;
+  prefillBankrollId?: number;
 }
 
 /**
@@ -36,10 +42,12 @@ interface Props {
  *      la cuota cayó fuera de tolerancia).
  *   4. Tras resultado del partido, liquidación en /bets.
  */
-export function ExecutionPanel({ arb }: Props) {
+export function ExecutionPanel({ arb, prefillStake, prefillBankrollId }: Props) {
   const [bankrolls, setBankrolls] = useState<Bankroll[] | null>(null);
-  const [bankrollId, setBankrollId] = useState<number | null>(null);
-  const [totalStake, setTotalStake] = useState(500);
+  const [bankrollId, setBankrollId] = useState<number | null>(
+    prefillBankrollId ?? null,
+  );
+  const [totalStake, setTotalStake] = useState(prefillStake ?? 500);
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [bets, setBets] = useState<Record<number, Bet>>({});
   const [loading, setLoading] = useState(false);
@@ -53,11 +61,14 @@ export function ExecutionPanel({ arb }: Props) {
       try {
         const brs = await listBankrolls();
         setBankrolls(brs);
-        if (brs.length > 0) setBankrollId(brs[0].id);
+        // Si no vino prefillBankrollId, elige el primero.
+        if (brs.length > 0 && bankrollId === null) setBankrollId(brs[0].id);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error cargando bankrolls");
       }
     })();
+    // bankrollId intentionally omitted — solo queremos correr al montar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function doRevalidate() {

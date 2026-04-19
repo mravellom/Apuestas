@@ -114,3 +114,26 @@ def premium_headers(premium_user: User) -> dict:
     """Auth headers for the premium user."""
     token = create_access_token(str(premium_user.id))
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def admin_user(db_session: AsyncSession) -> User:
+    """Create an admin test user."""
+    user = User(
+        id=uuid.uuid4(),
+        email="admin@example.com",
+        username="adminuser",
+        hashed_password=hash_password("testpass123"),
+        role="admin",
+    )
+    db_session.add(user)
+    config = UserConfig(user_id=user.id)
+    db_session.add(config)
+    await db_session.commit()
+    return user
+
+
+@pytest.fixture
+def admin_headers(admin_user: User) -> dict:
+    token = create_access_token(str(admin_user.id))
+    return {"Authorization": f"Bearer {token}"}

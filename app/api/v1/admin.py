@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.api.deps import DB, AdminUser
@@ -10,6 +11,21 @@ from app.models.team import Team
 from app.models.user import User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+class LeagueToggleRequest(BaseModel):
+    detection_enabled: bool
+
+
+class LeagueResponse(BaseModel):
+    id: int
+    key: str
+    name: str
+    country: str | None
+    detection_enabled: bool
+    active: bool
+
+    model_config = {"from_attributes": True}
 
 
 @router.get("/stats")
@@ -62,3 +78,35 @@ async def trigger_seed(db: DB, _user: AdminUser):
     from app.services.seed_service import seed_database
     counts = await seed_database(db)
     return {"status": "seed completed", "counts": counts}
+
+
+@router.get("/leagues", response_model=list[LeagueResponse])
+async def list_leagues(db: DB, _user: AdminUser):
+    """Lista todas las ligas con su estado de detection_enabled y active."""
+    rows = (await db.execute(select(League).order_by(League.key))).scalars().all()
+    return rows
+
+
+@router.post("/leagues/{league_key}/toggle", response_model=LeagueResponse)
+async def toggle_league_detection(
+    league_key: str,
+    payload: LeagueToggleRequest,
+    db: DB,
+    _user: AdminUser,
+):
+    """
+    Activa o desactiva la detección (y por cascada, el fetch) de una liga.
+    Toggle persistente: el seed no lo sobrescribe en redeploys posteriores.
+    """
+    league = (
+        await db.execute(select(League).where(League.key == league_key))
+    ).scalar_one_or_none()
+    if league is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"League '{league_key}' not found",
+        )
+    league.detection_enabled = payload.detection_enabled
+    await db.commit()
+    await db.refresh(league)
+    return league

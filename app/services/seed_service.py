@@ -52,6 +52,11 @@ LEAGUES = [
     {"sport_key": "basketball", "key": "basketball_nba", "name": "NBA", "country": "USA", "detection_enabled": False},
     {"sport_key": "americanfootball", "key": "americanfootball_nfl", "name": "NFL", "country": "USA", "detection_enabled": False},
     {"sport_key": "icehockey", "key": "icehockey_nhl", "name": "NHL", "country": "USA", "detection_enabled": False},
+    # Ligas femeninas — opt-in. Se activan manualmente via /admin/leagues/.../toggle
+    # cuando se quieran usar como complemento en días flojos de los mercados principales.
+    {"sport_key": "basketball", "key": "basketball_wnba", "name": "WNBA", "country": "USA", "detection_enabled": False},
+    {"sport_key": "football", "key": "soccer_usa_nwsl", "name": "NWSL", "country": "USA", "detection_enabled": False},
+    {"sport_key": "football", "key": "soccer_england_efl_womens", "name": "Women's Super League", "country": "England", "detection_enabled": False},
 ]
 
 MARKET_TYPES = [
@@ -127,7 +132,9 @@ async def seed_database(db: AsyncSession) -> dict[str, int]:
             counts["sports"] += 1
         sport_map[s["key"]] = sport.id
 
-    # Leagues
+    # Leagues. `detection_enabled` solo se aplica en inserciones; en ligas
+    # existentes respeta el toggle manual del usuario (via admin endpoint) —
+    # correr el seed varias veces no debe revertir decisiones operativas.
     for lg in LEAGUES:
         sport_id = sport_map.get(lg["sport_key"])
         if not sport_id:
@@ -144,8 +151,6 @@ async def seed_database(db: AsyncSession) -> dict[str, int]:
                 detection_enabled=detection_enabled,
             ))
             counts["leagues"] += 1
-        elif league.detection_enabled != detection_enabled:
-            league.detection_enabled = detection_enabled
 
     await db.flush()
 

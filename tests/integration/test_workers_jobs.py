@@ -134,12 +134,16 @@ class TestFetchOddsJob:
         assert fake_adapter.closed is True
 
     async def test_swallows_adapter_exception(
-        self, patch_async_session, monkeypatch, caplog
+        self, patch_async_session, db_session, monkeypatch, caplog
     ):
         """Even if ingestion blows up, the job must close the adapter and log."""
         import logging
         from app.config import settings
         monkeypatch.setattr(settings, "ODDS_API_KEY", "fake-key")
+
+        # El seed crea ligas con detection_enabled=True — sin eso el job moderno
+        # devuelve temprano "nothing to fetch" y nunca hits la ruta de excepción.
+        await seed_database(db_session)
 
         adapter = FakeAdapter()
         monkeypatch.setattr(jobs_module, "OddsAPIAdapter", lambda *a, **kw: adapter)

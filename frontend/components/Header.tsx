@@ -23,6 +23,9 @@ export function Header() {
           <Link href="/arbitrage" className="text-muted hover:text-white">
             Oportunidades
           </Link>
+          <Link href="/planning" className="text-muted hover:text-white">
+            Plan diario
+          </Link>
           <Link href="/bets" className="text-muted hover:text-white">
             Mis apuestas
           </Link>

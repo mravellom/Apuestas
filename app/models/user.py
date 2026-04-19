@@ -45,6 +45,16 @@ class UserConfig(Base):
     # otra moneda; esta es solo el default para formateo y para sugerir moneda
     # al crear un bankroll nuevo.
     default_currency: Mapped[str] = mapped_column(String(3), default="USD")
+    # Planificador: target diario (1% default). Valor guardado como porcentaje
+    # (1.0 = 1%). Se puede overridear en cada request al planner.
+    default_daily_target_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 3), default=Decimal("1.000")
+    )
+    # Tope de stake por arbitraje, como % del daily_cap. Evita concentrar todo
+    # el capital en un solo arb (mitiga rejections por book limits).
+    default_max_stake_per_arb_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 3), default=Decimal("15.000")
+    )
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship(back_populates="config")

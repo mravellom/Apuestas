@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { ExecutionPanel } from "@/components/ExecutionPanel";
 import { Header } from "@/components/Header";
@@ -20,6 +20,9 @@ export default function ArbitrageDetailPage({ params }: Props) {
   const { id } = use(params);
   const arbId = Number(id);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const prefillStake = searchParams.get("stake");
+  const prefillBankrollId = searchParams.get("bankroll");
   const [arb, setArb] = useState<Arbitrage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +114,15 @@ export default function ArbitrageDetailPage({ params }: Props) {
               <StakeCalculator legs={arb.legs} profitPct={arb.profit_pct} />
             </div>
 
-            {arb.status === "active" ? <ExecutionPanel arb={arb} /> : null}
+            {arb.status === "active" ? (
+              <ExecutionPanel
+                arb={arb}
+                prefillStake={prefillStake ? Number(prefillStake) : undefined}
+                prefillBankrollId={
+                  prefillBankrollId ? Number(prefillBankrollId) : undefined
+                }
+              />
+            ) : null}
           </>
         )}
       </main>

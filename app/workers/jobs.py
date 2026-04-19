@@ -12,41 +12,80 @@ from app.services.opportunity_service import OpportunityDetectionService
 logger = logging.getLogger(__name__)
 
 
+# Regiones y mercados por deporte — hardcoded porque no cambian por liga.
+# Si un deporte no está listado aquí, las ligas de ese deporte no se fetchearán
+# aunque tengan detection_enabled=True (salvaguarda contra fetches accidentales).
+SPORT_FETCH_SETTINGS: dict[str, dict[str, list[str]]] = {
+    "football": {
+        "regions": ["eu", "uk", "us", "us2"],
+        "markets": ["h2h"],
+    },
+    "baseball": {
+        "regions": ["us", "us2", "eu"],
+        "markets": ["h2h", "totals"],
+    },
+    "basketball": {
+        "regions": ["us", "us2", "eu"],
+        "markets": ["h2h", "totals"],
+    },
+    "americanfootball": {
+        "regions": ["us", "us2", "eu"],
+        "markets": ["h2h", "spreads", "totals"],
+    },
+    "icehockey": {
+        "regions": ["us", "us2", "eu"],
+        "markets": ["h2h", "totals"],
+    },
+}
+
+
 async def fetch_odds_job():
-    """Job: obtiene cuotas de fuentes externas y las guarda en DB."""
+    """
+    Job: obtiene cuotas solo de las ligas con detection_enabled=True, agrupadas
+    por sport. Esto hace que el toggle admin controle fetch + detect sin redeploy.
+    """
     if not settings.ODDS_API_KEY:
         logger.warning("ODDS_API_KEY not configured, skipping fetch")
         return
+
+    from sqlalchemy import select
+    from app.models.sport import League, Sport
 
     adapter = OddsAPIAdapter()
     service = OddsIngestionService(adapter, TeamNormalizer())
 
     try:
         async with async_session() as db:
-            # OVERNIGHT VALIDATION MODE — MLB h2h + totals. Spreads también
-            # soportados ya (el parameter se extrae del outcome.point con abs),
-            # pero MLB totals es el mercado con mayor variance entre libros y
-            # por eso donde más arbs reales aparecen. Se puede ampliar a
-            # spreads si quota lo permite.
-            configs = [
-                {
-                    "sport_key": "baseball",
-                    "leagues": ["baseball_mlb"],
-                    "regions": ["us", "us2", "eu"],
-                    "markets": ["h2h", "totals"],
-                },
-                # --- Desactivadas overnight 2026-04-18 ---
-                # {"sport_key": "football", "leagues": [...], ...}
-                # {"sport_key": "basketball", "leagues": ["basketball_nba"], ...}
-                # {"sport_key": "americanfootball", "leagues": ["americanfootball_nfl"], ...}
-                # {"sport_key": "icehockey", "leagues": ["icehockey_nhl"], ...}
-            ]
+            active = (
+                await db.execute(
+                    select(Sport.key, League.key)
+                    .join(League, League.sport_id == Sport.id)
+                    .where(League.detection_enabled.is_(True))
+                )
+            ).all()
+
+            if not active:
+                logger.info("No leagues with detection_enabled=True — nothing to fetch")
+                return
+
+            # Agrupa ligas por sport para enviar una request por (sport, regions, markets).
+            leagues_by_sport: dict[str, list[str]] = {}
+            for sport_key, league_key in active:
+                leagues_by_sport.setdefault(sport_key, []).append(league_key)
+
             total = {"events": 0, "odds_saved": 0, "errors": 0}
-            for cfg in configs:
+            for sport_key, league_keys in leagues_by_sport.items():
+                cfg = SPORT_FETCH_SETTINGS.get(sport_key)
+                if cfg is None:
+                    logger.warning(
+                        "Sport %s activo en %d liga(s) pero sin config de fetch; skip",
+                        sport_key, len(league_keys),
+                    )
+                    continue
                 c = await service.ingest_odds(
                     db,
-                    sport_key=cfg["sport_key"],
-                    league_keys=cfg["leagues"],
+                    sport_key=sport_key,
+                    league_keys=league_keys,
                     regions=cfg["regions"],
                     markets=cfg["markets"],
                 )

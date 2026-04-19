@@ -10,6 +10,7 @@ from app.api.v1 import (
     opportunities,
     paper,
     performance,
+    planning,
     sports,
     users,
 )
@@ -27,3 +28,4 @@ router.include_router(performance.router)
 router.include_router(alerts.router)
 router.include_router(admin.router)
 router.include_router(execution.router)
+router.include_router(planning.router)

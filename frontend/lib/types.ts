@@ -62,6 +62,31 @@ export interface PaperStats {
   by_bookmaker: Record<string, { bets: number; profit_units: number }>;
 }
 
+export interface AllocationSuggestion {
+  arbitrage_id: number;
+  match_label: string;
+  market_type: string;
+  profit_pct: number;
+  suggested_stake: number;
+  expected_profit: number;
+  bookmakers: string[];
+}
+
+export interface DailyPlan {
+  currency: string;
+  daily_investment_cap: number;
+  target_pct: number;
+  target_profit: number;
+  max_stake_per_arb_pct: number;
+  available_arbs: number;
+  allocations: AllocationSuggestion[];
+  total_suggested_stake: number;
+  expected_total_profit: number;
+  target_coverage_pct: number;
+  status: "empty" | "unachievable" | "achievable" | "exceeded";
+  recommendation: string;
+}
+
 export interface Bankroll {
   id: number;
   name: string;
