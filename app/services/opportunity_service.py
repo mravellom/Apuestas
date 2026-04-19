@@ -206,6 +206,8 @@ class OpportunityDetectionService:
                 & (Odds.bookmaker_id == latest_subq.c.bookmaker_id)
                 & (Odds.captured_at == latest_subq.c.max_captured),
             )
+            # Excluye bookmakers inactivos (phantom books con commission=0).
+            .where(Bookmaker.active.is_(True))
         )
 
         # Group by bookmaker

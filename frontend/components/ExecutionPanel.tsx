@@ -254,7 +254,13 @@ function ExecutionProgress({
 }) {
   const allPlaced = plan.legs.every((leg) => {
     const b = bets[leg.bet_id];
-    return b && (b.status === "placed" || b.status === "confirmed");
+    // "settled" cuenta como placed para el flow: ya se ejecutó y liquidó.
+    return (
+      b &&
+      (b.status === "placed" ||
+        b.status === "confirmed" ||
+        b.status === "settled")
+    );
   });
 
   const anyRejected = plan.legs.some(
@@ -532,6 +538,7 @@ function StatusBadge({ status }: { status: string }) {
     pending: "bg-warn/20 text-warn",
     placed: "bg-accent/20 text-accent",
     confirmed: "bg-accent/20 text-accent",
+    settled: "bg-border/40 text-white",
     rejected: "bg-danger/20 text-danger",
     void: "bg-border text-muted",
   };

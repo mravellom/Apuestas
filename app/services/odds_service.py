@@ -21,6 +21,10 @@ class OddsIngestionService:
     def __init__(self, adapter: DataSourceAdapter, normalizer: TeamNormalizer | None = None):
         self.adapter = adapter
         self.normalizer = normalizer or TeamNormalizer()
+        # Dedup de warnings: log único por bookmaker desconocido por instance,
+        # evita spamear logs cuando The Odds API devuelve repetidamente un book
+        # que no está en seed.
+        self._warned_unknown_bookmakers: set[str] = set()
 
     async def ingest_odds(
         self,
@@ -135,8 +139,19 @@ class OddsIngestionService:
         if not market_type:
             return
 
-        # Get or create bookmaker
-        bookmaker = await self._get_or_create_bookmaker(db, rod.bookmaker)
+        # Resuelve bookmaker existente. Si no está seedeado, skip + warning.
+        # Ver bug #4: auto-crear con commission_pct=0 produce arbs fantasma
+        # cuando el libro real cobra comisión (ej. smarkets, betfair exchange).
+        bookmaker = await self._get_existing_bookmaker(db, rod.bookmaker)
+        if bookmaker is None:
+            if rod.bookmaker not in self._warned_unknown_bookmakers:
+                logger.warning(
+                    "Unknown bookmaker '%s' in feed — skipping its odds. "
+                    "Add to seed (with correct commission_pct) to ingest.",
+                    rod.bookmaker,
+                )
+                self._warned_unknown_bookmakers.add(rod.bookmaker)
+            return
 
         # Get or create market
         market = await self._get_or_create_market(
@@ -216,15 +231,17 @@ class OddsIngestionService:
         result = await db.execute(select(MarketType).where(MarketType.key == key))
         return result.scalar_one_or_none()
 
-    async def _get_or_create_bookmaker(self, db: AsyncSession, key: str) -> Bookmaker:
-        result = await db.execute(select(Bookmaker).where(Bookmaker.key == key))
-        bk = result.scalar_one_or_none()
-        if bk:
-            return bk
-        bk = Bookmaker(key=key, name=key.replace("_", " ").title())
-        db.add(bk)
-        await db.flush()
-        return bk
+    async def _get_existing_bookmaker(
+        self, db: AsyncSession, key: str
+    ) -> Bookmaker | None:
+        """
+        Devuelve el bookmaker si existe en seed, None si no. No auto-crea
+        — los libros deben estar pre-registrados con su commission_pct real.
+        """
+        result = await db.execute(
+            select(Bookmaker).where(Bookmaker.key == key, Bookmaker.active.is_(True))
+        )
+        return result.scalar_one_or_none()
 
     async def _get_or_create_market(
         self, db: AsyncSession, match_id: int, market_type_id: int,

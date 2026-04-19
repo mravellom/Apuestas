@@ -13,6 +13,7 @@ const STATUS_FILTERS: { value: BetStatus | "all"; label: string }[] = [
   { value: "all", label: "Todas" },
   { value: "pending", label: "Pending" },
   { value: "placed", label: "Placed" },
+  { value: "settled", label: "Liquidadas" },
   { value: "rejected", label: "Rejected" },
 ];
 
@@ -257,6 +258,8 @@ function statusStyle(s: BetStatus): string {
     case "placed":
     case "confirmed":
       return "bg-accent/20 text-accent";
+    case "settled":
+      return "bg-border/40 text-white";
     case "rejected":
       return "bg-danger/20 text-danger";
     default:

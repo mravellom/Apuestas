@@ -166,9 +166,37 @@ class ExecutionService:
         if revalidation.status == "stale" and not force_if_stale:
             raise StaleArbError(revalidation)
 
-        bankroll = await db.get(Bankroll, bankroll_id)
+        # Lock del bankroll a nivel DB: todas las operaciones que leen-modifican
+        # bankroll (execute, reject, settle) lo hacen bajo este lock para evitar
+        # lost updates en concurrencia. En sqlite el FOR UPDATE es no-op pero
+        # en postgres serializa las requests sobre el mismo row.
+        bankroll = (
+            await db.execute(
+                select(Bankroll).with_for_update().where(Bankroll.id == bankroll_id)
+            )
+        ).scalar_one_or_none()
         if bankroll is None or bankroll.user_id != user_id:
             raise ExecutionError("Bankroll not found or not owned by user")
+
+        # Idempotencia: si el usuario ya tiene bets vivos para este arb, no
+        # crear duplicados (protege contra doble click / retry automático).
+        # Estados terminales (rejected, settled, void) no bloquean — el usuario
+        # puede reintentar un arb tras rechazarlo todo.
+        existing = (
+            await db.execute(
+                select(BetTracking.id).where(
+                    BetTracking.user_id == user_id,
+                    BetTracking.arbitrage_id == arb.id,
+                    BetTracking.status.in_(("pending", "placed", "confirmed")),
+                )
+            )
+        ).first()
+        if existing is not None:
+            raise ExecutionError(
+                f"Arbitrage {arb.id} already has active bets for this user; "
+                f"reject or settle them before re-executing."
+            )
+
         if bankroll.available_amount < total_stake:
             raise ExecutionError(
                 f"Insufficient bankroll: available={bankroll.available_amount} "
@@ -317,8 +345,13 @@ class ExecutionService:
         if bet.status not in ("pending", "placed"):
             raise ExecutionError(f"Cannot reject bet in status '{bet.status}'")
 
-        # Libera capital reservado de este leg específico.
-        bankroll = await db.get(Bankroll, bet.bankroll_id)
+        # Lock del bankroll: previene race con execute/settle concurrentes que
+        # pisen el reserved_amount.
+        bankroll = (
+            await db.execute(
+                select(Bankroll).with_for_update().where(Bankroll.id == bet.bankroll_id)
+            )
+        ).scalar_one_or_none()
         if bankroll is not None:
             bankroll.reserved_amount = max(
                 Decimal("0"), bankroll.reserved_amount - bet.stake_amount
@@ -340,15 +373,33 @@ class ExecutionService:
         actual_payout: Decimal,
     ) -> BetTracking:
         """
-        result ∈ {won, lost, void, half_won, half_lost}. actual_payout es lo que
-        el libro efectivamente paga (0 si pierde, stake si void, stake*odds si gana).
+        Liquida un bet con el resultado real del partido.
+
+        result ∈ {won, lost, void, half_won, half_lost}. actual_payout es lo
+        que el libro efectivamente paga (0 si pierde, stake si void,
+        stake*odds si gana). Esperado NETO de comisiones del broker — la
+        detección ya aplicó la comisión al calcular profit_pct.
+
+        Post-condición: bet.status = "settled". Llamadas subsiguientes fallan
+        para evitar doble-aplicación del PnL al bankroll.
         """
         if result not in {"won", "lost", "void", "half_won", "half_lost"}:
             raise ExecutionError(f"Invalid result '{result}'")
 
         bet = await self._get_owned_bet(db, bet_id, user_id)
+        # Bloqueo explícito de doble-settle: si ya se liquidó, ningún reintento
+        # debe sumar PnL de nuevo al bankroll.
+        if bet.status == "settled":
+            raise ExecutionError(f"Bet {bet_id} already settled")
         if bet.status not in ("placed", "confirmed"):
             raise ExecutionError(f"Cannot settle bet in status '{bet.status}'")
+
+        # Lock del bankroll: elimina race con otras ops concurrentes.
+        bankroll = (
+            await db.execute(
+                select(Bankroll).with_for_update().where(Bankroll.id == bet.bankroll_id)
+            )
+        ).scalar_one_or_none()
 
         pnl = actual_payout - bet.stake_amount
 
@@ -356,9 +407,9 @@ class ExecutionService:
         bet.actual_payout = actual_payout
         bet.profit_loss = pnl
         bet.settled_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        # Transición terminal: el check al inicio del método depende de esto.
+        bet.status = "settled"
 
-        # Libera reserve y ajusta current_amount con el PnL neto.
-        bankroll = await db.get(Bankroll, bet.bankroll_id)
         if bankroll is not None:
             bankroll.reserved_amount = max(
                 Decimal("0"), bankroll.reserved_amount - bet.stake_amount

@@ -323,6 +323,133 @@ async def test_settle_leg_won_updates_bankroll_and_pnl(db_session):
 
 
 @pytest.mark.asyncio
+async def test_execute_is_idempotent_against_duplicate_calls(db_session):
+    """Bug #1: doble click / retry no debe duplicar bets ni reservas."""
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+
+    # Segunda llamada inmediatamente — debe fallar con ExecutionError.
+    with pytest.raises(ExecutionError, match="already has active bets"):
+        await svc.execute_arbitrage_manual(
+            db_session,
+            arbitrage_id=fx["arb"].id,
+            user_id=fx["user"].id,
+            bankroll_id=fx["bankroll"].id,
+            total_stake=Decimal("1000"),
+        )
+
+    # La reserva debe seguir igual (no duplicada).
+    await db_session.refresh(fx["bankroll"])
+    assert fx["bankroll"].reserved_amount == Decimal("1000.00")
+    # Solo deben existir 2 bets (no 4).
+    bets = (
+        await db_session.execute(
+            select(BetTracking).where(BetTracking.arbitrage_id == fx["arb"].id)
+        )
+    ).scalars().all()
+    assert len(bets) == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_allowed_after_all_bets_rejected(db_session):
+    """Tras rechazar todos los legs, el usuario puede re-ejecutar el mismo arb."""
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+    for leg in plan.legs:
+        await svc.mark_leg_rejected(db_session, bet_id=leg.bet_id, user_id=fx["user"].id)
+
+    # Segunda ejecución tras rejects debe funcionar.
+    await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("500"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_double_settle_raises_and_does_not_duplicate_pnl(db_session):
+    """Bug #2: settle dos veces no debe aplicar PnL dos veces al bankroll."""
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+    leg = plan.legs[0]
+    await svc.mark_leg_placed(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        odds_at_placement=Decimal("2.10"),
+    )
+
+    # Primer settle: OK.
+    await svc.settle_leg(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        result="won", actual_payout=Decimal("1000"),
+    )
+    await db_session.refresh(fx["bankroll"])
+    current_after_first = fx["bankroll"].current_amount
+
+    # Segundo settle: debe fallar.
+    with pytest.raises(ExecutionError, match="already settled"):
+        await svc.settle_leg(
+            db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+            result="won", actual_payout=Decimal("1000"),
+        )
+
+    # Bankroll no debe cambiar tras el intento fallido.
+    await db_session.refresh(fx["bankroll"])
+    assert fx["bankroll"].current_amount == current_after_first
+
+
+@pytest.mark.asyncio
+async def test_settle_transitions_to_settled_status(db_session):
+    """Bet.status debe quedar como 'settled' tras liquidación."""
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000"),
+    )
+    leg = plan.legs[0]
+    await svc.mark_leg_placed(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        odds_at_placement=Decimal("2.10"),
+    )
+    bet = await svc.settle_leg(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        result="won", actual_payout=Decimal("1000"),
+    )
+    assert bet.status == "settled"
+    assert bet.result == "won"
+
+
+@pytest.mark.asyncio
 async def test_revalidate_alive_when_odds_unchanged(db_session):
     fx = await _make_fixture(db_session)
     svc = ArbitrageDetectionService()

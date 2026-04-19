@@ -125,7 +125,8 @@ export type BetStatus =
   | "placed"
   | "confirmed"
   | "rejected"
-  | "void";
+  | "void"
+  | "settled";
 
 export type BetResult = "won" | "lost" | "void" | "half_won" | "half_lost";
 

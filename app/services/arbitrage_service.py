@@ -296,6 +296,10 @@ class ArbitrageDetectionService:
                 & (Odds.bookmaker_id == latest_subq.c.bookmaker_id)
                 & (Odds.captured_at == latest_subq.c.max_captured),
             )
+            # Excluye bookmakers marcados inactivos (p.ej. libros fantasma
+            # creados por auto-create antes del fix de bug #4, o books con
+            # comisión desconocida deshabilitados manualmente).
+            .where(Bookmaker.active.is_(True))
         )
 
         bookmaker_odds: dict[str, dict[int, float]] = {}
