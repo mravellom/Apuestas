@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { ExecutionPanel } from "@/components/ExecutionPanel";
 import { Header } from "@/components/Header";
 import { StakeCalculator } from "@/components/StakeCalculator";
 import { getArbitrage } from "@/lib/api";
@@ -106,7 +107,11 @@ export default function ArbitrageDetailPage({ params }: Props) {
               <Metric label="Nº outcomes" value={String(arb.legs.length)} />
             </div>
 
-            <StakeCalculator legs={arb.legs} profitPct={arb.profit_pct} />
+            <div className="mb-6">
+              <StakeCalculator legs={arb.legs} profitPct={arb.profit_pct} />
+            </div>
+
+            {arb.status === "active" ? <ExecutionPanel arb={arb} /> : null}
           </>
         )}
       </main>

@@ -1,7 +1,18 @@
 "use client";
 
 import { clearToken, getToken } from "./auth";
-import type { Arbitrage, CurrentUser, LoginResponse, PaperBet, PaperStats } from "./types";
+import type {
+  Arbitrage,
+  Bankroll,
+  Bet,
+  BetResult,
+  BetStatus,
+  CurrentUser,
+  ExecutionPlan,
+  LoginResponse,
+  PaperBet,
+  PaperStats,
+} from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -102,4 +113,71 @@ export async function listPaperBets(filters: PaperBetFilters = {}): Promise<Pape
 
 export async function getPaperStats(): Promise<PaperStats> {
   return request<PaperStats>("/api/v1/paper/stats");
+}
+
+export async function listBankrolls(): Promise<Bankroll[]> {
+  return request<Bankroll[]>("/api/v1/users/bankroll");
+}
+
+export async function createBankroll(input: {
+  name?: string;
+  currency?: string;
+  initial_amount: number;
+}): Promise<Bankroll> {
+  return request<Bankroll>("/api/v1/users/bankroll", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function executeArbitrage(
+  arbId: number,
+  bankrollId: number,
+  totalStake: number,
+): Promise<ExecutionPlan> {
+  return request<ExecutionPlan>(`/api/v1/arbitrage/${arbId}/execute`, {
+    method: "POST",
+    body: JSON.stringify({ bankroll_id: bankrollId, total_stake: totalStake }),
+  });
+}
+
+export async function placeBet(betId: number, oddsAtPlacement: number): Promise<Bet> {
+  return request<Bet>(`/api/v1/bets/${betId}/place`, {
+    method: "PATCH",
+    body: JSON.stringify({ odds_at_placement: oddsAtPlacement }),
+  });
+}
+
+export async function rejectBet(betId: number, reason = ""): Promise<Bet> {
+  return request<Bet>(`/api/v1/bets/${betId}/reject`, {
+    method: "PATCH",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function settleBet(
+  betId: number,
+  result: BetResult,
+  actualPayout: number,
+): Promise<Bet> {
+  return request<Bet>(`/api/v1/bets/${betId}/settle`, {
+    method: "PATCH",
+    body: JSON.stringify({ result, actual_payout: actualPayout }),
+  });
+}
+
+export interface BetFilters {
+  status?: BetStatus;
+  arbitrageId?: number;
+  limit?: number;
+}
+
+export async function listBets(filters: BetFilters = {}): Promise<Bet[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status_filter", filters.status);
+  if (filters.arbitrageId !== undefined) {
+    params.set("arbitrage_id", String(filters.arbitrageId));
+  }
+  params.set("limit", String(filters.limit ?? 50));
+  return request<Bet[]>(`/api/v1/bets?${params.toString()}`);
 }

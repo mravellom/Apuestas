@@ -61,3 +61,64 @@ export interface PaperStats {
   by_source: Record<string, { bets: number; profit_units: number }>;
   by_bookmaker: Record<string, { bets: number; profit_units: number }>;
 }
+
+export interface Bankroll {
+  id: number;
+  name: string;
+  currency: string;
+  initial_amount: number;
+  current_amount: number;
+  reserved_amount: number;
+  available_amount: number;
+}
+
+export interface LegInstruction {
+  bet_id: number;
+  bookmaker_key: string;
+  bookmaker_name: string;
+  outcome_key: string;
+  outcome_name: string;
+  stake_amount: number;
+  target_odds: number;
+  min_acceptable_odds: number;
+  commission_pct: number;
+}
+
+export interface ExecutionPlan {
+  arbitrage_id: number;
+  match_label: string;
+  market_type: string;
+  total_stake: number;
+  currency: string;
+  expected_profit: number;
+  profit_pct: number;
+  legs: LegInstruction[];
+}
+
+export type BetStatus =
+  | "pending"
+  | "placed"
+  | "confirmed"
+  | "rejected"
+  | "void";
+
+export type BetResult = "won" | "lost" | "void" | "half_won" | "half_lost";
+
+export interface Bet {
+  id: number;
+  arbitrage_id: number | null;
+  opportunity_id: number | null;
+  bookmaker_id: number;
+  outcome_id: number;
+  stake_amount: number;
+  odds_at_detection: number | null;
+  odds_at_placement: number | null;
+  commission_pct: number;
+  status: BetStatus;
+  result: BetResult | null;
+  actual_payout: number | null;
+  profit_loss: number | null;
+  created_at: string;
+  placed_at: string | null;
+  settled_at: string | null;
+}

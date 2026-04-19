@@ -23,8 +23,14 @@ export function Header() {
           <Link href="/arbitrage" className="text-muted hover:text-white">
             Oportunidades
           </Link>
+          <Link href="/bets" className="text-muted hover:text-white">
+            Mis apuestas
+          </Link>
+          <Link href="/bankroll" className="text-muted hover:text-white">
+            Bankroll
+          </Link>
           <Link href="/paper" className="text-muted hover:text-white">
-            Paper trading
+            Paper
           </Link>
           <button
             type="button"
