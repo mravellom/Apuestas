@@ -43,7 +43,7 @@ async def update_config(data: UserConfigUpdate, db: DB, user: CurrentUser):
 @router.get("/bankroll", response_model=list[BankrollResponse])
 async def list_bankrolls(db: DB, user: CurrentUser):
     result = await db.execute(select(Bankroll).where(Bankroll.user_id == user.id))
-    return result.scalars().all()
+    return [_to_response(b) for b in result.scalars().all()]
 
 
 @router.post("/bankroll", response_model=BankrollResponse, status_code=201)
@@ -57,7 +57,7 @@ async def create_bankroll(data: BankrollCreate, db: DB, user: CurrentUser):
     )
     db.add(bankroll)
     await db.flush()
-    return bankroll
+    return _to_response(bankroll)
 
 
 @router.put("/bankroll/{bankroll_id}", response_model=BankrollResponse)
@@ -73,4 +73,16 @@ async def update_bankroll(bankroll_id: int, data: BankrollUpdate, db: DB, user: 
         setattr(bankroll, field, value)
 
     await db.flush()
-    return bankroll
+    return _to_response(bankroll)
+
+
+def _to_response(b: Bankroll) -> BankrollResponse:
+    return BankrollResponse(
+        id=b.id,
+        name=b.name,
+        currency=b.currency,
+        initial_amount=float(b.initial_amount),
+        current_amount=float(b.current_amount),
+        reserved_amount=float(b.reserved_amount or 0),
+        available_amount=float(b.available_amount),
+    )

@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     VALUE_REFERENCE_BOOKMAKER: str = ""
     # Minimum bookmakers for arbitrage scan. Drop to 2 when using restricted allowlist.
     ARB_MIN_BOOKMAKERS: int = 5
+    # Mínimo profit_pct (net, post-comisión). Valores más altos = menos ruido pero menos arbs.
+    ARB_MIN_PROFIT_PCT: float = 0.5
+    # Edad máxima de una cuota para considerarla fresca en detección de arbs.
+    # Con fetch cada 15min, 20 es más seguro que 30 (evita cuotas stale).
+    ARB_MAX_ODDS_AGE_MINUTES: int = 20
+    # Ventana temporal hacia el futuro para escanear partidos. 72h evita arbs de
+    # líneas "palp error" muy anticipadas que típicamente no son reales.
+    ARB_MAX_HOURS_TO_KICKOFF: int = 72
     # Minimum EV for value detection (0.01 = 1%). Lower with sharp reference; higher with consensus.
     VALUE_MIN_EV: float = 0.03
     # Scheduler intervals (seconds). Defaults are quota-safe for The Odds API free tier.

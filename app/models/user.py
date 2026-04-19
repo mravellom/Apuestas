@@ -57,7 +57,17 @@ class Bankroll(Base):
     currency: Mapped[str] = mapped_column(String(3), default="EUR")
     initial_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     current_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    # Capital bloqueado por apuestas en status pending/placed. Debe cumplir
+    # reserved_amount <= current_amount en toda transición.
+    reserved_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0")
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship(back_populates="bankrolls")
+
+    @property
+    def available_amount(self) -> Decimal:
+        """Capital libre para nuevas apuestas."""
+        return self.current_amount - self.reserved_amount

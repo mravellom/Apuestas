@@ -32,6 +32,8 @@ class BankrollResponse(BaseModel):
     currency: str
     initial_amount: float
     current_amount: float
+    reserved_amount: float = 0
+    available_amount: float = 0
 
     model_config = {"from_attributes": True}
 

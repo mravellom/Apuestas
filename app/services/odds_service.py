@@ -58,6 +58,18 @@ class OddsIngestionService:
                 if not raw_odds:
                     continue
 
+                # Coverage telemetry: cuántos bookmakers distintos vinieron y si el
+                # sharp de referencia está presente. Permite detectar degradación
+                # silenciosa del feed (ej. Pinnacle cae de un día a otro).
+                bookmakers_seen = {rod.bookmaker for rod in raw_odds}
+                logger.info(
+                    "ingest.coverage league=%s bookmakers=%d pinnacle=%s books=%s",
+                    league_key,
+                    len(bookmakers_seen),
+                    "pinnacle" in bookmakers_seen,
+                    ",".join(sorted(bookmakers_seen)),
+                )
+
                 # Group by event (external_id)
                 events: dict[str, list[RawOddsData]] = {}
                 for rod in raw_odds:

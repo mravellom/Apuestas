@@ -131,8 +131,10 @@ async def detect_arbitrage_job():
     from app.services.arbitrage_service import ArbitrageDetectionService
 
     service = ArbitrageDetectionService(
-        min_profit_pct=0.5,
+        min_profit_pct=settings.ARB_MIN_PROFIT_PCT,
         min_bookmakers=settings.ARB_MIN_BOOKMAKERS,
+        max_odds_age_minutes=settings.ARB_MAX_ODDS_AGE_MINUTES,
+        max_minutes_to_kickoff=settings.ARB_MAX_HOURS_TO_KICKOFF * 60,
     )
 
     try:
