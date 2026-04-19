@@ -23,44 +23,23 @@ async def fetch_odds_job():
 
     try:
         async with async_session() as db:
-            # Fetch por sport: cada sport tiene su sport_key en DB y sus ligas.
-            # Regiones "us,us2" traen offshore US (bovada, betonlineag, mybookieag, betus, lowvig).
+            # OVERNIGHT VALIDATION MODE — MLB h2h + totals. Spreads también
+            # soportados ya (el parameter se extrae del outcome.point con abs),
+            # pero MLB totals es el mercado con mayor variance entre libros y
+            # por eso donde más arbs reales aparecen. Se puede ampliar a
+            # spreads si quota lo permite.
             configs = [
-                {
-                    "sport_key": "football",
-                    "leagues": [
-                        "soccer_chile_campeonato",
-                        "soccer_brazil_campeonato",
-                        "soccer_italy_serie_b",
-                        "soccer_usa_mls",
-                    ],
-                    "regions": ["eu", "uk", "us", "us2"],
-                    "markets": ["h2h"],
-                },
-                {
-                    "sport_key": "basketball",
-                    "leagues": ["basketball_nba"],
-                    "regions": ["us", "us2", "eu"],
-                    "markets": ["h2h", "spreads", "totals"],
-                },
                 {
                     "sport_key": "baseball",
                     "leagues": ["baseball_mlb"],
                     "regions": ["us", "us2", "eu"],
-                    "markets": ["h2h", "spreads", "totals"],
-                },
-                {
-                    "sport_key": "americanfootball",
-                    "leagues": ["americanfootball_nfl"],
-                    "regions": ["us", "us2", "eu"],
-                    "markets": ["h2h", "spreads", "totals"],
-                },
-                {
-                    "sport_key": "icehockey",
-                    "leagues": ["icehockey_nhl"],
-                    "regions": ["us", "us2", "eu"],
                     "markets": ["h2h", "totals"],
                 },
+                # --- Desactivadas overnight 2026-04-18 ---
+                # {"sport_key": "football", "leagues": [...], ...}
+                # {"sport_key": "basketball", "leagues": ["basketball_nba"], ...}
+                # {"sport_key": "americanfootball", "leagues": ["americanfootball_nfl"], ...}
+                # {"sport_key": "icehockey", "leagues": ["icehockey_nhl"], ...}
             ]
             total = {"events": 0, "odds_saved": 0, "errors": 0}
             for cfg in configs:

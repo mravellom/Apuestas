@@ -66,11 +66,27 @@ class OddsAPIAdapter(DataSourceAdapter):
                 if self.allowed_bookmakers and bookmaker["key"].lower() not in self.allowed_bookmakers:
                     continue
                 for market in bookmaker.get("markets", []):
+                    outcomes_raw = market.get("outcomes", [])
                     outcomes = [
-                        RawOutcome(name=o["name"], price=o["price"])
-                        for o in market.get("outcomes", [])
+                        RawOutcome(
+                            name=o["name"],
+                            price=o["price"],
+                            point=float(o["point"]) if o.get("point") is not None else None,
+                        )
+                        for o in outcomes_raw
                     ]
-                    point = market.get("point")
+                    # The Odds API pone `point` a nivel outcome, no market:
+                    #   totals  → ambos outcomes con el mismo punto (over/under 8.5)
+                    #   spreads → puntos simétricos (-1.5 home / +1.5 away)
+                    #   h2h     → sin point
+                    # Para agrupar libros que cotizan la misma línea usamos el
+                    # valor absoluto del primer point no-nulo. Así bet365 con
+                    # home=-1.5/away=+1.5 y pinnacle con away=+1.5/home=-1.5
+                    # caen al mismo market "spreads 1.5".
+                    line = next(
+                        (abs(o.point) for o in outcomes if o.point is not None),
+                        None,
+                    )
                     raw_data.append(
                         RawOddsData(
                             source=self.SOURCE,
@@ -82,7 +98,7 @@ class OddsAPIAdapter(DataSourceAdapter):
                             bookmaker=bookmaker["key"],
                             market_type=market["key"],
                             outcomes=outcomes,
-                            parameter=float(point) if point is not None else None,
+                            parameter=line,
                             external_id=event.get("id"),
                         )
                     )

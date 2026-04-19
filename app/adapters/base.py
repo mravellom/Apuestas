@@ -9,6 +9,10 @@ from datetime import datetime
 class RawOutcome:
     name: str
     price: float
+    # Handicap o total line asociado al outcome (e.g. +1.5, -1.5, 8.5). None
+    # para mercados planos como h2h. The Odds API lo publica a este nivel,
+    # no a nivel market.
+    point: float | None = None
 
 
 @dataclass
