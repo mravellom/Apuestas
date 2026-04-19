@@ -12,6 +12,7 @@ import type {
   LoginResponse,
   PaperBet,
   PaperStats,
+  RevalidationResult,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -130,14 +131,23 @@ export async function createBankroll(input: {
   });
 }
 
+export async function revalidateArbitrage(arbId: number): Promise<RevalidationResult> {
+  return request<RevalidationResult>(`/api/v1/arbitrage/${arbId}/revalidate`);
+}
+
 export async function executeArbitrage(
   arbId: number,
   bankrollId: number,
   totalStake: number,
+  forceIfStale = false,
 ): Promise<ExecutionPlan> {
   return request<ExecutionPlan>(`/api/v1/arbitrage/${arbId}/execute`, {
     method: "POST",
-    body: JSON.stringify({ bankroll_id: bankrollId, total_stake: totalStake }),
+    body: JSON.stringify({
+      bankroll_id: bankrollId,
+      total_stake: totalStake,
+      force_if_stale: forceIfStale,
+    }),
   });
 }
 

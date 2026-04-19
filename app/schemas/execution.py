@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ExecuteArbitrageRequest(BaseModel):
     bankroll_id: int
     total_stake: float = Field(gt=0)
+    force_if_stale: bool = False
 
 
 class LegInstructionResponse(BaseModel):

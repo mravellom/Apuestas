@@ -9,13 +9,19 @@ from sqlalchemy import select
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
 from app.models.broker import Broker
-from app.models.market import Market, MarketType, Outcome
+from app.models.market import Market, MarketType, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import BetTracking
 from app.models.sport import League, Season, Sport
 from app.models.team import Team
 from app.models.user import Bankroll, User
-from app.services.execution_service import ExecutionError, ExecutionService
+from app.services.arbitrage_service import ArbitrageDetectionService
+from app.services.execution_service import (
+    DeadArbError,
+    ExecutionError,
+    ExecutionService,
+    StaleArbError,
+)
 
 
 async def _make_fixture(db):
@@ -94,6 +100,17 @@ async def _make_fixture(db):
     db.add_all([bk_pin, bk_bet])
     await db.flush()
 
+    # Odds rows que reflejan el arb — necesarias para que la revalidación
+    # encuentre cuotas al momento de ejecutar. Captured_at reciente.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add_all([
+        Odds(outcome_id=out_home.id, bookmaker_id=bk_pin.id, price=Decimal("2.10"), captured_at=now, source="test"),
+        Odds(outcome_id=out_away.id, bookmaker_id=bk_pin.id, price=Decimal("1.90"), captured_at=now, source="test"),
+        Odds(outcome_id=out_home.id, bookmaker_id=bk_bet.id, price=Decimal("1.95"), captured_at=now, source="test"),
+        Odds(outcome_id=out_away.id, bookmaker_id=bk_bet.id, price=Decimal("2.05"), captured_at=now, source="test"),
+    ])
+    await db.flush()
+
     arb = ArbitrageOpportunity(
         match_id=match.id,
         market_id=market.id,
@@ -116,6 +133,8 @@ async def _make_fixture(db):
                 "stake_pct": 0.51,
             },
         ],
+        # detected_at reciente para que la revalidación pase (age ≈ 0)
+        detected_at=now,
         expires_at=match.commence_time,
     )
     db.add(arb)
@@ -301,6 +320,50 @@ async def test_settle_leg_won_updates_bankroll_and_pnl(db_session):
     # current_amount subió por el pnl; reserved bajó por el stake liberado.
     assert fx["bankroll"].current_amount > Decimal("10000.00")
     assert fx["bankroll"].reserved_amount == Decimal("1000.00") - leg.stake_amount
+
+
+@pytest.mark.asyncio
+async def test_revalidate_alive_when_odds_unchanged(db_session):
+    fx = await _make_fixture(db_session)
+    svc = ArbitrageDetectionService()
+    result = await svc.revalidate_arb(db_session, fx["arb"].id)
+    assert result.status == "alive"
+    assert result.current_profit_pct > 0
+
+
+@pytest.mark.asyncio
+async def test_revalidate_dead_when_odds_degraded(db_session):
+    fx = await _make_fixture(db_session)
+    # Colapsa las cuotas a valores que anulan el arb.
+    from app.models.market import Odds as OddsModel
+    odds = (await db_session.execute(select(OddsModel))).scalars().all()
+    for o in odds:
+        o.price = Decimal("1.50")  # margen muy cargado
+    await db_session.commit()
+
+    svc = ArbitrageDetectionService()
+    result = await svc.revalidate_arb(db_session, fx["arb"].id)
+    assert result.status == "dead"
+
+
+@pytest.mark.asyncio
+async def test_execute_raises_dead_arb_error_when_odds_degraded(db_session):
+    fx = await _make_fixture(db_session)
+    from app.models.market import Odds as OddsModel
+    odds = (await db_session.execute(select(OddsModel))).scalars().all()
+    for o in odds:
+        o.price = Decimal("1.50")
+    await db_session.commit()
+
+    svc = ExecutionService()
+    with pytest.raises(DeadArbError):
+        await svc.execute_arbitrage_manual(
+            db_session,
+            arbitrage_id=fx["arb"].id,
+            user_id=fx["user"].id,
+            bankroll_id=fx["bankroll"].id,
+            total_stake=Decimal("1000"),
+        )
 
 
 @pytest.mark.asyncio

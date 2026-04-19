@@ -1,6 +1,6 @@
 """Endpoints de arbitraje."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +10,17 @@ from app.models.arbitrage import ArbitrageOpportunity
 from app.models.match import Match
 from app.models.market import Market, MarketType
 from app.models.team import Team
+from app.services.arbitrage_service import ArbitrageDetectionService
 
 router = APIRouter(prefix="/arbitrage", tags=["arbitrage"])
+
+
+class RevalidationResponse(BaseModel):
+    status: str  # alive | stale | dead
+    detected_profit_pct: float
+    current_profit_pct: float
+    age_seconds: int
+    current_legs: list[dict] | None = None
 
 
 class ArbResponse(BaseModel):
@@ -65,3 +74,25 @@ async def list_arbitrage(
         ))
 
     return response
+
+
+@router.get("/{arb_id}/revalidate", response_model=RevalidationResponse)
+async def revalidate_arbitrage(arb_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Re-evalúa el arb contra las cuotas más recientes en DB. Devuelve si sigue
+    siendo ejecutable (alive), requiere confirmación por haber caído de valor
+    (stale), o ya no existe (dead). No modifica estado.
+    """
+    svc = ArbitrageDetectionService()
+    try:
+        result = await svc.revalidate_arb(db, arb_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return RevalidationResponse(
+        status=result.status,
+        detected_profit_pct=result.detected_profit_pct,
+        current_profit_pct=result.current_profit_pct,
+        age_seconds=result.age_seconds,
+        current_legs=result.current_legs,
+    )

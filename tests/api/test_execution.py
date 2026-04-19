@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
-from app.models.market import Market, MarketType, Outcome
+from app.models.market import Market, MarketType, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import BetTracking
 from app.models.sport import League, Season, Sport
@@ -60,6 +60,15 @@ async def _seed_arb_and_bankroll(db, user_id):
     db.add_all([b1, b2])
     await db.flush()
 
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add_all([
+        Odds(outcome_id=o1.id, bookmaker_id=b1.id, price=Decimal("2.10"), captured_at=now, source="test"),
+        Odds(outcome_id=o2.id, bookmaker_id=b1.id, price=Decimal("1.90"), captured_at=now, source="test"),
+        Odds(outcome_id=o1.id, bookmaker_id=b2.id, price=Decimal("1.95"), captured_at=now, source="test"),
+        Odds(outcome_id=o2.id, bookmaker_id=b2.id, price=Decimal("2.05"), captured_at=now, source="test"),
+    ])
+    await db.flush()
+
     arb = ArbitrageOpportunity(
         match_id=match.id,
         market_id=market.id,
@@ -70,6 +79,7 @@ async def _seed_arb_and_bankroll(db, user_id):
             {"outcome": "home", "outcome_name": "A", "bookmaker": b1.key, "odds": 2.1, "stake_pct": 0.5},
             {"outcome": "away", "outcome_name": "B", "bookmaker": b2.key, "odds": 2.05, "stake_pct": 0.5},
         ],
+        detected_at=now,
         expires_at=match.commence_time,
     )
     db.add(arb)

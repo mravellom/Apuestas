@@ -24,7 +24,12 @@ from app.schemas.execution import (
     RejectBetRequest,
     SettleBetRequest,
 )
-from app.services.execution_service import ExecutionError, ExecutionService
+from app.services.execution_service import (
+    DeadArbError,
+    ExecutionError,
+    ExecutionService,
+    StaleArbError,
+)
 
 router = APIRouter(tags=["execution"])
 
@@ -48,6 +53,37 @@ async def execute_arbitrage(
             user_id=user.id,
             bankroll_id=payload.bankroll_id,
             total_stake=Decimal(str(payload.total_stake)),
+            force_if_stale=payload.force_if_stale,
+        )
+    except StaleArbError as e:
+        # 409 Conflict con info de revalidación — el cliente decide si reintentar
+        # con force_if_stale=True tras mostrar el detalle al usuario.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "stale_arb",
+                "message": str(e),
+                "revalidation": {
+                    "status": e.revalidation.status,
+                    "detected_profit_pct": e.revalidation.detected_profit_pct,
+                    "current_profit_pct": e.revalidation.current_profit_pct,
+                    "age_seconds": e.revalidation.age_seconds,
+                },
+            },
+        )
+    except DeadArbError as e:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail={
+                "error": "dead_arb",
+                "message": str(e),
+                "revalidation": {
+                    "status": e.revalidation.status,
+                    "detected_profit_pct": e.revalidation.detected_profit_pct,
+                    "current_profit_pct": e.revalidation.current_profit_pct,
+                    "age_seconds": e.revalidation.age_seconds,
+                },
+            },
         )
     except ExecutionError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

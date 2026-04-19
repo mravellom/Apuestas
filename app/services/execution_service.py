@@ -29,10 +29,31 @@ from app.models.match import Match
 from app.models.opportunity import BetTracking
 from app.models.team import Team
 from app.models.user import Bankroll
+from app.services.arbitrage_service import ArbitrageDetectionService, RevalidationResult
 
 
 class ExecutionError(Exception):
     """Errores de negocio durante ejecución (bankroll insuficiente, arb inactivo, etc)."""
+
+
+class StaleArbError(ExecutionError):
+    """El arb cayó de valor pero sigue siendo positivo — requiere force=True para continuar."""
+
+    def __init__(self, revalidation: RevalidationResult):
+        self.revalidation = revalidation
+        super().__init__(
+            f"Arb is stale: profit_pct dropped from {revalidation.detected_profit_pct:.2f}% "
+            f"to {revalidation.current_profit_pct:.2f}%. Pass force=True to execute anyway."
+        )
+
+
+class DeadArbError(ExecutionError):
+    def __init__(self, revalidation: RevalidationResult):
+        self.revalidation = revalidation
+        super().__init__(
+            f"Arb is dead: current profit_pct={revalidation.current_profit_pct:.2f}% "
+            f"vs detected {revalidation.detected_profit_pct:.2f}%"
+        )
 
 
 @dataclass
@@ -74,12 +95,22 @@ class ExecutionService:
         user_id,
         bankroll_id: int,
         total_stake: Decimal,
+        force_if_stale: bool = False,
     ) -> ExecutionPlan:
         arb = await db.get(ArbitrageOpportunity, arbitrage_id)
         if arb is None:
             raise ExecutionError(f"Arbitrage {arbitrage_id} not found")
         if arb.status != "active":
             raise ExecutionError(f"Arbitrage {arbitrage_id} is {arb.status}, not active")
+
+        # Revalidación pre-ejecución: las cuotas en DB pueden haber movido desde
+        # que se detectó. Dead → siempre bloquea; stale → requiere force_if_stale.
+        arb_svc = ArbitrageDetectionService()
+        revalidation = await arb_svc.revalidate_arb(db, arb.id)
+        if revalidation.status == "dead":
+            raise DeadArbError(revalidation)
+        if revalidation.status == "stale" and not force_if_stale:
+            raise StaleArbError(revalidation)
 
         bankroll = await db.get(Bankroll, bankroll_id)
         if bankroll is None or bankroll.user_id != user_id:

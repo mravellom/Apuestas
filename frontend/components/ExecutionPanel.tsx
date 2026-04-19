@@ -8,6 +8,7 @@ import {
   listBets,
   placeBet,
   rejectBet,
+  revalidateArbitrage,
 } from "@/lib/api";
 import type {
   Arbitrage,
@@ -15,6 +16,7 @@ import type {
   Bet,
   ExecutionPlan,
   LegInstruction,
+  RevalidationResult,
 } from "@/lib/types";
 
 interface Props {
@@ -38,6 +40,8 @@ export function ExecutionPanel({ arb }: Props) {
   const [bets, setBets] = useState<Record<number, Bet>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [revalidation, setRevalidation] = useState<RevalidationResult | null>(null);
+  const [revalidating, setRevalidating] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -51,11 +55,24 @@ export function ExecutionPanel({ arb }: Props) {
     })();
   }, []);
 
+  async function doRevalidate() {
+    setRevalidating(true);
+    setError(null);
+    try {
+      const r = await revalidateArbitrage(arb.id);
+      setRevalidation(r);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error revalidando");
+    } finally {
+      setRevalidating(false);
+    }
+  }
+
   const selectedBankroll = bankrolls?.find((b) => b.id === bankrollId) ?? null;
 
   const maxStake = selectedBankroll?.available_amount ?? 0;
 
-  async function handleExecute() {
+  async function handleExecute(forceIfStale = false) {
     if (!bankrollId) {
       setError("Necesitas crear un bankroll primero");
       return;
@@ -63,9 +80,8 @@ export function ExecutionPanel({ arb }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const p = await executeArbitrage(arb.id, bankrollId, totalStake);
+      const p = await executeArbitrage(arb.id, bankrollId, totalStake, forceIfStale);
       setPlan(p);
-      // Fetch current state of bets para mostrar status actualizado.
       const currentBets = await listBets({ arbitrageId: arb.id });
       const byId: Record<number, Bet> = {};
       for (const b of currentBets) byId[b.id] = b;
@@ -128,6 +144,12 @@ export function ExecutionPanel({ arb }: Props) {
 
       {!plan ? (
         <div className="space-y-4">
+          <RevalidationBanner
+            revalidation={revalidation}
+            loading={revalidating}
+            onCheck={doRevalidate}
+          />
+
           <div>
             <label className="block text-xs uppercase tracking-wide text-muted">
               Bankroll
@@ -168,10 +190,14 @@ export function ExecutionPanel({ arb }: Props) {
 
           <button
             disabled={loading || !bankrollId || totalStake > maxStake}
-            onClick={handleExecute}
+            onClick={() => handleExecute(revalidation?.status === "stale")}
             className="w-full rounded bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {loading ? "Reservando capital…" : "Ejecutar (crea apuestas pending)"}
+            {loading
+              ? "Reservando capital…"
+              : revalidation?.status === "stale"
+                ? "Ejecutar igualmente (forzar stale)"
+                : "Ejecutar (crea apuestas pending)"}
           </button>
 
           <p className="text-xs text-muted">
@@ -384,6 +410,90 @@ function LegCard({
             : ""}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function RevalidationBanner({
+  revalidation,
+  loading,
+  onCheck,
+}: {
+  revalidation: RevalidationResult | null;
+  loading: boolean;
+  onCheck: () => void;
+}) {
+  if (!revalidation) {
+    return (
+      <div className="rounded border border-border bg-bg/50 p-3 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted">
+            Verifica si el arb sigue activo con las cuotas más recientes antes
+            de ejecutar.
+          </span>
+          <button
+            onClick={onCheck}
+            disabled={loading}
+            className="rounded bg-accent/10 px-3 py-1 text-xs font-medium text-accent disabled:opacity-50"
+          >
+            {loading ? "Revalidando…" : "Revalidar ahora"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const colorByStatus: Record<string, string> = {
+    alive: "border-accent/40 bg-accent/10 text-accent",
+    stale: "border-warn/40 bg-warn/10 text-warn",
+    dead: "border-danger/40 bg-danger/10 text-danger",
+  };
+  const labelByStatus: Record<string, string> = {
+    alive: "✓ Vivo",
+    stale: "⚠ Degradado",
+    dead: "✗ Muerto",
+  };
+
+  return (
+    <div
+      className={`rounded border p-3 text-sm ${
+        colorByStatus[revalidation.status] ?? "border-border bg-bg/50 text-muted"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-semibold">
+            {labelByStatus[revalidation.status] ?? revalidation.status}
+          </div>
+          <div className="mt-1 text-xs">
+            Profit actual:{" "}
+            <span className="font-mono">
+              {revalidation.current_profit_pct.toFixed(2)}%
+            </span>{" "}
+            (detectado {revalidation.detected_profit_pct.toFixed(2)}%) · Edad{" "}
+            {Math.round(revalidation.age_seconds / 60)} min
+          </div>
+          {revalidation.status === "stale" ? (
+            <div className="mt-1 text-xs">
+              Las cuotas bajaron. Puedes seguir, pero el beneficio real será
+              menor al detectado.
+            </div>
+          ) : null}
+          {revalidation.status === "dead" ? (
+            <div className="mt-1 text-xs">
+              Este arb ya no existe. La ejecución será bloqueada por el
+              servidor.
+            </div>
+          ) : null}
+        </div>
+        <button
+          onClick={onCheck}
+          disabled={loading}
+          className="rounded border border-current px-2 py-1 text-xs disabled:opacity-50"
+        >
+          Recheck
+        </button>
+      </div>
     </div>
   );
 }

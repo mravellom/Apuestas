@@ -1,6 +1,7 @@
 """Servicio de detección de arbitraje: busca surebets entre bookmakers."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -15,6 +16,27 @@ from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
 from app.models.sport import League, Season
 from app.services.paper_trading_service import PaperTradingService
+
+
+@dataclass
+class RevalidationResult:
+    """
+    Resultado de re-evaluar un arb activo contra las cuotas más recientes en DB.
+
+    status:
+      alive — profit_pct actual ≥ 80% del detectado (ejecutable con confianza)
+      stale — profit_pct entre 50% y 80% del detectado (requiere confirmación
+              explícita del usuario para ejecutar)
+      dead  — total_implied ≥ 1.0 o profit_pct cae debajo de 50% del detectado;
+              no tiene sentido ejecutar
+
+    age_seconds es cuánto tiempo ha pasado desde que el arb fue detectado.
+    """
+    status: str  # alive | stale | dead
+    detected_profit_pct: float
+    current_profit_pct: float
+    age_seconds: int
+    current_legs: list[dict] | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +150,100 @@ class ArbitrageDetectionService:
             min_profit_pct=self.min_profit_pct,
             min_bookmakers=self.min_bookmakers,
             commission_by_bookmaker=commission_map,
+        )
+
+    async def revalidate_arb(
+        self, db: AsyncSession, arb_id: int
+    ) -> RevalidationResult:
+        """
+        Re-evalúa un arb contra las últimas cuotas en DB sin modificar estado.
+
+        Útil justo antes de ejecutar para evitar que el usuario apueste sobre
+        un arb que ya no existe (cuotas movieron mientras la alerta estaba
+        visible). No re-fetchea The Odds API — confía en que el job de fetch
+        está corriendo. Si el job se cae, esto fallará igual que la detección
+        normal.
+        """
+        arb = await db.get(ArbitrageOpportunity, arb_id)
+        if arb is None:
+            raise ValueError(f"Arbitrage {arb_id} not found")
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        age_seconds = int((now - arb.detected_at).total_seconds())
+        detected_pct = float(arb.profit_pct)
+
+        market = await db.get(Market, arb.market_id)
+        if market is None:
+            return RevalidationResult(
+                status="dead",
+                detected_profit_pct=detected_pct,
+                current_profit_pct=0.0,
+                age_seconds=age_seconds,
+            )
+
+        commission_map = await self._load_commission_map(db)
+
+        # Para revalidar, relajamos los umbrales de filtro (min_bookmakers y
+        # min_profit_pct). No estamos detectando un nuevo arb — estamos
+        # verificando que el que ya detectamos sigue teniendo valor positivo.
+        outcomes = (
+            await db.execute(select(Outcome).where(Outcome.market_id == market.id))
+        ).scalars().all()
+        if not outcomes:
+            return RevalidationResult(
+                status="dead",
+                detected_profit_pct=detected_pct,
+                current_profit_pct=0.0,
+                age_seconds=age_seconds,
+            )
+
+        odds_by_bookmaker = await self._get_latest_odds_by_bookmaker(db, outcomes)
+        from app.core.arbitrage import detect_arbitrage as _detect
+
+        current = _detect(
+            odds_by_bookmaker=odds_by_bookmaker,
+            outcome_keys=[o.key for o in outcomes],
+            outcome_names=[o.name for o in outcomes],
+            min_profit_pct=0.0,
+            min_bookmakers=1,
+            commission_by_bookmaker=commission_map,
+        )
+
+        if current is None:
+            return RevalidationResult(
+                status="dead",
+                detected_profit_pct=detected_pct,
+                current_profit_pct=0.0,
+                age_seconds=age_seconds,
+            )
+
+        current_pct = float(current.profit_pct)
+        # Clasificación relativa: comparamos contra el pct detectado original,
+        # no contra 0, porque un arb de 3% que baja a 2% sigue siendo ejecutable
+        # mientras que uno de 0.6% que baja a 0.4% cruza el umbral de ruido.
+        ratio = current_pct / detected_pct if detected_pct > 0 else 0
+        if ratio >= 0.8:
+            status = "alive"
+        elif ratio >= 0.5:
+            status = "stale"
+        else:
+            status = "dead"
+
+        return RevalidationResult(
+            status=status,
+            detected_profit_pct=detected_pct,
+            current_profit_pct=current_pct,
+            age_seconds=age_seconds,
+            current_legs=[
+                {
+                    "outcome": leg.outcome_key,
+                    "outcome_name": leg.outcome_name,
+                    "bookmaker": leg.bookmaker_key,
+                    "odds": leg.best_odds,
+                    "stake_pct": leg.stake_pct,
+                }
+                for leg in current.legs
+            ],
         )
 
     async def _load_commission_map(self, db: AsyncSession) -> dict[str, float]:

@@ -104,6 +104,14 @@ export type BetStatus =
 
 export type BetResult = "won" | "lost" | "void" | "half_won" | "half_lost";
 
+export interface RevalidationResult {
+  status: "alive" | "stale" | "dead";
+  detected_profit_pct: number;
+  current_profit_pct: number;
+  age_seconds: number;
+  current_legs: ArbitrageLeg[] | null;
+}
+
 export interface Bet {
   id: number;
   arbitrage_id: number | null;
