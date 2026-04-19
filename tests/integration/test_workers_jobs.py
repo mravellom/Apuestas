@@ -257,7 +257,7 @@ class TestDetectArbitrageJob:
         calls: list[tuple[str, object]] = []
 
         class FakeTelegram:
-            async def send(self, dest, payload):
+            async def send(self, dest, payload, currency=""):
                 calls.append((dest, payload))
                 return True
 
@@ -288,7 +288,7 @@ class TestDetectArbitrageJob:
         calls = []
 
         class FakeTelegram:
-            async def send(self, dest, payload):
+            async def send(self, dest, payload, currency=""):
                 calls.append((dest, payload))
                 return True
             async def close(self):

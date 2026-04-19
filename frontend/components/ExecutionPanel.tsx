@@ -10,6 +10,7 @@ import {
   rejectBet,
   revalidateArbitrage,
 } from "@/lib/api";
+import { formatMoney } from "@/lib/format";
 import type {
   Arbitrage,
   Bankroll,
@@ -161,8 +162,7 @@ export function ExecutionPanel({ arb }: Props) {
             >
               {bankrolls.map((b) => (
                 <option key={b.id} value={b.id}>
-                  {b.name} ({b.currency}) — disponible{" "}
-                  {b.available_amount.toFixed(2)}
+                  {b.name} — disponible {formatMoney(b.available_amount, b.currency)}
                 </option>
               ))}
             </select>
@@ -184,7 +184,10 @@ export function ExecutionPanel({ arb }: Props) {
               className="mt-1 w-full rounded border border-border bg-bg px-3 py-2 text-sm text-white"
             />
             <p className="mt-1 text-xs text-muted">
-              Máximo disponible: {maxStake.toFixed(2)}
+              Máximo disponible:{" "}
+              {selectedBankroll
+                ? formatMoney(maxStake, selectedBankroll.currency)
+                : maxStake.toFixed(2)}
             </p>
           </div>
 
@@ -238,13 +241,13 @@ function ExecutionProgress({
         <div className="flex justify-between">
           <span className="text-muted">Stake total</span>
           <span className="font-mono text-white">
-            {plan.total_stake.toFixed(2)} {plan.currency}
+            {formatMoney(plan.total_stake, plan.currency)}
           </span>
         </div>
         <div className="flex justify-between">
           <span className="text-muted">Profit esperado</span>
           <span className="font-mono text-accent">
-            +{plan.expected_profit.toFixed(2)} {plan.currency} (
+            +{formatMoney(plan.expected_profit, plan.currency)} (
             {plan.profit_pct.toFixed(2)}%)
           </span>
         </div>
@@ -347,7 +350,7 @@ function LegCard({
       <div className="grid grid-cols-3 gap-3 text-sm">
         <Field label="Stake">
           <span className="font-mono text-white">
-            {leg.stake_amount.toFixed(2)} {currency}
+            {formatMoney(leg.stake_amount, currency)}
           </span>
         </Field>
         <Field label="Cuota objetivo">

@@ -150,8 +150,9 @@ async def detect_arbitrage_job():
             if not new_arbs:
                 return
 
-            # Get alert configs for telegram
+            # Get alert configs for telegram + user's preferred currency for format
             from sqlalchemy import select
+            from app.models.user import UserConfig
             alerts = (
                 await db.execute(
                     select(AlertConfig).where(AlertConfig.active.is_(True))
@@ -160,6 +161,15 @@ async def detect_arbitrage_job():
 
             if not alerts:
                 return
+
+            # Map user_id → default_currency para formatear notifs.
+            user_ids = list({a.user_id for a in alerts})
+            cfgs = (
+                await db.execute(
+                    select(UserConfig).where(UserConfig.user_id.in_(user_ids))
+                )
+            ).scalars().all()
+            currency_by_user = {c.user_id: c.default_currency for c in cfgs}
 
             notifier = TelegramNotifier()
             sent, failed = 0, 0
@@ -184,7 +194,8 @@ async def detect_arbitrage_job():
 
                     for alert in alerts:
                         try:
-                            ok = await notifier.send(alert.destination, payload)
+                            currency = currency_by_user.get(alert.user_id, "USD")
+                            ok = await notifier.send(alert.destination, payload, currency)
                             if ok:
                                 sent += 1
                             else:

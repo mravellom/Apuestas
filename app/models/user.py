@@ -41,6 +41,10 @@ class UserConfig(Base):
     preferred_sports: Mapped[dict | None] = mapped_column(JSON, default=["football"])
     preferred_leagues: Mapped[dict | None] = mapped_column(JSON, default=[])
     risk_tolerance: Mapped[str] = mapped_column(String(20), default="moderate")
+    # Moneda de display preferida (USD/EUR/CLP). Los bankrolls pueden tener
+    # otra moneda; esta es solo el default para formateo y para sugerir moneda
+    # al crear un bankroll nuevo.
+    default_currency: Mapped[str] = mapped_column(String(3), default="USD")
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship(back_populates="config")

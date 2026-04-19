@@ -2,6 +2,33 @@ export function formatPct(value: number, digits = 2): string {
   return `${value.toFixed(digits)}%`;
 }
 
+const CURRENCY_LOCALE: Record<string, string> = {
+  CLP: "es-CL",
+  USD: "en-US",
+  EUR: "es-ES",
+  GBP: "en-GB",
+};
+
+/**
+ * Formatea un monto con el símbolo/separadores apropiados para la moneda.
+ * CLP por convención no usa decimales (Intl ya lo maneja).
+ */
+export function formatMoney(amount: number, currency: string): string {
+  const locale = CURRENCY_LOCALE[currency] ?? "en-US";
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency,
+      // CLP sin decimales; USD/EUR con 2. Intl lo hace solo, pero el default
+      // no siempre respeta — forzamos con maximumFractionDigits.
+      maximumFractionDigits: currency === "CLP" ? 0 : 2,
+      minimumFractionDigits: currency === "CLP" ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+}
+
 export function formatOdds(value: number): string {
   return value.toFixed(2);
 }

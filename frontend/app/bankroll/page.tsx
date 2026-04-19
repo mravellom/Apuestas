@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { createBankroll, listBankrolls } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
+import { formatMoney } from "@/lib/format";
 import type { Bankroll } from "@/lib/types";
 
 export default function BankrollPage() {
@@ -103,20 +104,20 @@ export default function BankrollPage() {
                         <td className="px-3 py-2 text-white">{b.name}</td>
                         <td className="px-3 py-2 font-mono">{b.currency}</td>
                         <td className="px-3 py-2 text-right font-mono text-muted">
-                          {b.initial_amount.toFixed(2)}
+                          {formatMoney(b.initial_amount, b.currency)}
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-white">
-                          {b.current_amount.toFixed(2)}
+                          {formatMoney(b.current_amount, b.currency)}
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-warn">
-                          {b.reserved_amount.toFixed(2)}
+                          {formatMoney(b.reserved_amount, b.currency)}
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-accent">
-                          {b.available_amount.toFixed(2)}
+                          {formatMoney(b.available_amount, b.currency)}
                         </td>
                         <td className={`px-3 py-2 text-right font-mono ${pnlColor}`}>
                           {pnl >= 0 ? "+" : ""}
-                          {pnl.toFixed(2)}
+                          {formatMoney(pnl, b.currency)}
                         </td>
                       </tr>
                     );

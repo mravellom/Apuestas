@@ -52,8 +52,13 @@ class ArbitragePayload:
     total_implied: float
     legs: list[dict]  # [{outcome_name, bookmaker, odds, stake_pct}, ...]
 
-    def format_message(self) -> str:
+    def format_message(self, currency: str = "") -> str:
+        """
+        Formato neutro en moneda: el ejemplo se expresa en 100 unidades.
+        Si `currency` se pasa, se sufija para claridad (ej. "100 USD").
+        """
         profit_str = f"{self.profit_pct:.2f}%"
+        unit_label = f" {currency}" if currency else " u."
         msg = (
             f"🔒 ARBITRAJE DETECTADO\n"
             f"\n"
@@ -71,10 +76,12 @@ class ArbitragePayload:
                 f"  • {leg['outcome_name']} → {leg['bookmaker']}\n"
                 f"    Cuota: {leg['odds']:.2f} | Stake: {pct:.1f}%\n"
             )
+        total_stake = sum(leg['stake_pct'] * 100 for leg in self.legs)
+        payout = 100 * (1 + self.profit_pct / 100)
         msg += (
             f"\n"
-            f"💡 Con €100: apuestas €{sum(leg['stake_pct'] * 100 for leg in self.legs):.0f}, "
-            f"cobras €{100 * (1 + self.profit_pct / 100):.2f} seguro"
+            f"💡 Con 100{unit_label}: apuestas {total_stake:.0f}{unit_label}, "
+            f"cobras {payout:.2f}{unit_label} seguro"
         )
         return msg
 

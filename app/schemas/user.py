@@ -11,6 +11,7 @@ class UserConfigResponse(BaseModel):
     preferred_sports: list[str] | None
     preferred_leagues: list[str] | None
     risk_tolerance: str
+    default_currency: str = "USD"
 
     model_config = {"from_attributes": True}
 
@@ -24,6 +25,7 @@ class UserConfigUpdate(BaseModel):
     preferred_sports: list[str] | None = None
     preferred_leagues: list[str] | None = None
     risk_tolerance: str | None = None
+    default_currency: str | None = Field(None, min_length=3, max_length=3)
 
 
 class BankrollResponse(BaseModel):

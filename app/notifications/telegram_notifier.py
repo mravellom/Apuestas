@@ -17,20 +17,30 @@ class TelegramNotifier(Notifier):
         self.bot_token = bot_token or getattr(settings, "TELEGRAM_BOT_TOKEN", "")
         self.client = httpx.AsyncClient(timeout=10.0)
 
-    async def send(self, destination: str, payload: NotificationPayload | ArbitragePayload) -> bool:
+    async def send(
+        self,
+        destination: str,
+        payload: NotificationPayload | ArbitragePayload,
+        currency: str = "",
+    ) -> bool:
         """
         Envía notificación por Telegram.
 
         Args:
             destination: chat_id del usuario o grupo
             payload: datos de la oportunidad
+            currency: moneda para formatear el cálculo ilustrativo
         """
         if not self.bot_token:
             logger.warning("Telegram bot token not configured")
             return False
 
         url = TELEGRAM_API_URL.format(token=self.bot_token)
-        message = payload.format_message()
+        message = (
+            payload.format_message(currency)
+            if isinstance(payload, ArbitragePayload)
+            else payload.format_message()
+        )
 
         try:
             response = await self.client.post(url, json={
