@@ -6,6 +6,7 @@ from app.adapters.normalizer import TeamNormalizer
 from app.adapters.odds_api import OddsAPIAdapter
 from app.config import settings
 from app.database import async_session
+from app.metrics import tracked_job
 from app.services.odds_service import OddsIngestionService
 from app.services.opportunity_service import OpportunityDetectionService
 
@@ -17,7 +18,10 @@ logger = logging.getLogger(__name__)
 # aunque tengan detection_enabled=True (salvaguarda contra fetches accidentales).
 SPORT_FETCH_SETTINGS: dict[str, dict[str, list[str]]] = {
     "football": {
-        "regions": ["eu", "uk", "us", "us2"],
+        # "uk" quitado: libros UK no ejecutables desde Chile y no aportan en
+        # ligas Latam (Brasileirão, Argentina, etc.). Restaurar si se activa
+        # una liga europea con acceso confirmado desde Chile.
+        "regions": ["eu", "us", "us2"],
         "markets": ["h2h"],
     },
     "baseball": {
@@ -39,6 +43,16 @@ SPORT_FETCH_SETTINGS: dict[str, dict[str, list[str]]] = {
 }
 
 
+def _in_quiet_window(hour_utc: int, start: int, end: int) -> bool:
+    """True si `hour_utc` cae en la franja [start, end) con wraparound."""
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour_utc < end
+    return hour_utc >= start or hour_utc < end
+
+
+@tracked_job("fetch_odds")
 async def fetch_odds_job():
     """
     Job: obtiene cuotas solo de las ligas con detection_enabled=True, agrupadas
@@ -46,6 +60,21 @@ async def fetch_odds_job():
     """
     if not settings.ODDS_API_KEY:
         logger.warning("ODDS_API_KEY not configured, skipping fetch")
+        return
+
+    from datetime import datetime, timezone
+    hour_utc = datetime.now(timezone.utc).hour
+    if _in_quiet_window(
+        hour_utc,
+        settings.FETCH_ODDS_QUIET_START_UTC,
+        settings.FETCH_ODDS_QUIET_END_UTC,
+    ):
+        logger.info(
+            "Fetch skipped: hour %d UTC in quiet window [%d, %d)",
+            hour_utc,
+            settings.FETCH_ODDS_QUIET_START_UTC,
+            settings.FETCH_ODDS_QUIET_END_UTC,
+        )
         return
 
     from sqlalchemy import select
@@ -102,6 +131,7 @@ async def fetch_odds_job():
         await adapter.close()
 
 
+@tracked_job("detect_value")
 async def detect_value_job():
     """Job: detecta value bets y envía notificaciones."""
     from app.notifications.service import NotificationService
@@ -137,6 +167,7 @@ async def detect_value_job():
         logger.error(f"Detect value job failed: {e}")
 
 
+@tracked_job("detect_arbitrage")
 async def detect_arbitrage_job():
     """Job: detecta oportunidades de arbitraje (surebets) y notifica."""
     from app.models.match import Match
@@ -158,10 +189,12 @@ async def detect_arbitrage_job():
     try:
         async with async_session() as db:
             counts, new_arbs = await service.detect_all(db)
+            killed = await service.sweep_dead_arbs(db)
             logger.info(
-                "Arbitrage scan: %d arbs found, %d expired, %d errors",
+                "Arbitrage scan: %d arbs found, %d expired, %d killed, %d errors",
                 counts["arbs_found"],
                 counts.get("expired", 0),
+                killed,
                 counts["errors"],
             )
 
@@ -230,6 +263,7 @@ async def detect_arbitrage_job():
         logger.error("Detect arbitrage job failed: %s", e)
 
 
+@tracked_job("capture_closing_lines")
 async def capture_closing_lines_job():
     """Job: congela la última cuota disponible como closing line para partidos próximos a empezar."""
     from datetime import datetime, timedelta, timezone
@@ -304,6 +338,7 @@ async def capture_closing_lines_job():
         logger.error(f"Capture closing lines job failed: {e}")
 
 
+@tracked_job("fetch_scores")
 async def fetch_scores_job():
     """Job: obtiene resultados de partidos recientes y liquida paper bets.
 
@@ -317,18 +352,30 @@ async def fetch_scores_job():
     import httpx
     from sqlalchemy import select
     from app.models.match import Match
+    from app.models.paper import PaperBet
+    from app.models.sport import League, Season
     from app.services.paper_trading_service import PaperTradingService
 
-    leagues = [
-        "soccer_chile_campeonato",
-        "soccer_brazil_campeonato",
-        "soccer_italy_serie_b",
-        "soccer_usa_mls",
-        "basketball_nba",
-        "baseball_mlb",
-        "americanfootball_nfl",
-        "icehockey_nhl",
-    ]
+    # Ligas a consultar = detection_enabled UNION ligas con paper bets pendientes.
+    # El segundo término evita orfandar bets sin liquidar cuando una liga se
+    # desactiva con apuestas vivas adentro.
+    async with async_session() as db:
+        enabled_keys = (await db.execute(
+            select(League.key).where(League.detection_enabled.is_(True))
+        )).scalars().all()
+        pending_keys = (await db.execute(
+            select(League.key)
+            .join(Season, Season.league_id == League.id)
+            .join(Match, Match.season_id == Season.id)
+            .join(PaperBet, PaperBet.match_id == Match.id)
+            .where(PaperBet.result == "pending")
+            .distinct()
+        )).scalars().all()
+        leagues = sorted(set(enabled_keys) | set(pending_keys))
+
+    if not leagues:
+        logger.info("Scores: no active or pending-bet leagues; skipping fetch")
+        return
 
     updated = 0
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -375,6 +422,7 @@ async def fetch_scores_job():
         )
 
 
+@tracked_job("cleanup")
 async def cleanup_job():
     """Job: limpieza de datos expirados."""
     from datetime import datetime, timezone
