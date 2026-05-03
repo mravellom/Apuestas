@@ -2,23 +2,36 @@
 
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from jose import jwt
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.user import User, UserConfig
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# bcrypt.hashpw trunca a 72 bytes si el password es más largo, pero falla si
+# recibe >72 directamente en versiones nuevas. Truncamos explícitamente para
+# mantener consistencia entre hash y verify. 72 chars es el límite natural
+# de bcrypt — passwords más largos son raros y truncarlos es el comportamiento
+# industry-standard (Django, Rails, etc. hacen lo mismo).
+_BCRYPT_MAX = 72
+
+
+def _encode(password: str) -> bytes:
+    return password.encode("utf-8")[:_BCRYPT_MAX]
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(_encode(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(_encode(plain), hashed.encode("utf-8"))
+    except ValueError:
+        return False
 
 
 def create_access_token(user_id: str) -> str:

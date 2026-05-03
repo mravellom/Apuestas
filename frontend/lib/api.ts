@@ -3,6 +3,8 @@
 import { clearToken, getToken } from "./auth";
 import type {
   Arbitrage,
+  ArbitrageHistoryItem,
+  ArbitrageHistoryStatus,
   Bankroll,
   Bet,
   BetResult,
@@ -12,7 +14,10 @@ import type {
   ExecutionPlan,
   ExposureSummary,
   LoginResponse,
+  OpportunityHistoryItem,
+  OpportunityHistoryStatus,
   PaperBet,
+  PaperCLV,
   PaperStats,
   RevalidationResult,
 } from "./types";
@@ -91,6 +96,38 @@ export async function listArbitrage(
   return request<Arbitrage[]>(`/api/v1/arbitrage/?${params.toString()}`);
 }
 
+export interface ArbitrageHistoryFilters {
+  status?: ArbitrageHistoryStatus;
+  limit?: number;
+}
+
+export async function listArbitrageHistory(
+  filters: ArbitrageHistoryFilters = {},
+): Promise<ArbitrageHistoryItem[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  params.set("limit", String(filters.limit ?? 200));
+  return request<ArbitrageHistoryItem[]>(
+    `/api/v1/arbitrage/history?${params.toString()}`,
+  );
+}
+
+export interface OpportunityHistoryFilters {
+  status?: OpportunityHistoryStatus;
+  limit?: number;
+}
+
+export async function listOpportunityHistory(
+  filters: OpportunityHistoryFilters = {},
+): Promise<OpportunityHistoryItem[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  params.set("limit", String(filters.limit ?? 200));
+  return request<OpportunityHistoryItem[]>(
+    `/api/v1/opportunities/history?${params.toString()}`,
+  );
+}
+
 export async function getArbitrage(id: number): Promise<Arbitrage | null> {
   // Backend has no /arbitrage/{id} endpoint; filter client-side from the list.
   const all = await listArbitrage({ status: "active" });
@@ -114,8 +151,24 @@ export async function listPaperBets(filters: PaperBetFilters = {}): Promise<Pape
   return request<PaperBet[]>(`/api/v1/paper/bets?${params.toString()}`);
 }
 
-export async function getPaperStats(): Promise<PaperStats> {
-  return request<PaperStats>("/api/v1/paper/stats");
+export async function getPaperStats(sourceType?: "value" | "arbitrage"): Promise<PaperStats> {
+  const qs = sourceType ? `?source_type=${sourceType}` : "";
+  return request<PaperStats>(`/api/v1/paper/stats${qs}`);
+}
+
+export interface CLVFilters {
+  sourceType?: "value" | "arbitrage";
+  bookmakerKey?: string;
+  result?: "pending" | "won" | "lost" | "void";
+}
+
+export async function getPaperCLV(filters: CLVFilters = {}): Promise<PaperCLV> {
+  const params = new URLSearchParams();
+  if (filters.sourceType) params.set("source_type", filters.sourceType);
+  if (filters.bookmakerKey) params.set("bookmaker_key", filters.bookmakerKey);
+  if (filters.result) params.set("result", filters.result);
+  const qs = params.toString();
+  return request<PaperCLV>(`/api/v1/paper/clv${qs ? `?${qs}` : ""}`);
 }
 
 export async function listBankrolls(): Promise<Bankroll[]> {

@@ -16,6 +16,7 @@ class OpportunityResponse(BaseModel):
     implied_prob: float
     value_pct: float
     kelly_stake_pct: float | None
+    is_steam: bool = False
     status: str
     detected_at: datetime
 

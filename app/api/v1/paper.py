@@ -1,6 +1,9 @@
 """Endpoints de paper trading: listado de apuestas simuladas y métricas."""
 
+import math
+import statistics
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -17,9 +20,13 @@ from app.models.team import Team
 router = APIRouter(prefix="/paper", tags=["paper"])
 
 
+PaperSource = Literal["value", "arbitrage"]
+PaperResult = Literal["pending", "won", "lost", "void"]
+
+
 class PaperBetResponse(BaseModel):
     id: int
-    source_type: str
+    source_type: PaperSource
     match: str
     outcome: str
     bookmaker: str
@@ -27,8 +34,14 @@ class PaperBetResponse(BaseModel):
     stake_units: float
     ev_at_placement: float | None
     placed_at: str
-    result: str
+    result: PaperResult
     profit_units: float | None
+
+
+class StatsBreakdown(BaseModel):
+    """Agregado por bucket (source o bookmaker) en `/paper/stats`."""
+    bets: int
+    profit_units: float
 
 
 class StatsResponse(BaseModel):
@@ -41,8 +54,8 @@ class StatsResponse(BaseModel):
     total_profit_units: float
     roi_pct: float | None
     win_rate_pct: float | None
-    by_source: dict
-    by_bookmaker: dict
+    by_source: dict[str, StatsBreakdown]
+    by_bookmaker: dict[str, StatsBreakdown]
 
 
 def _as_float(d: Decimal | None) -> float | None:
@@ -90,53 +103,61 @@ async def list_paper_bets(
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def paper_stats(db: AsyncSession = Depends(get_db)):
-    """Métricas agregadas del paper trading."""
-    by_result = dict(
-        (r, c)
-        for r, c in (
-            await db.execute(select(PaperBet.result, func.count()).group_by(PaperBet.result))
-        ).all()
-    )
+async def paper_stats(
+    source_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Métricas agregadas del paper trading. `source_type` filtra a un origen."""
+    source_filter = (PaperBet.source_type == source_type) if source_type else None
+
+    result_query = select(PaperBet.result, func.count()).group_by(PaperBet.result)
+    if source_filter is not None:
+        result_query = result_query.where(source_filter)
+    by_result = dict((r, c) for r, c in (await db.execute(result_query)).all())
     total = sum(by_result.values())
     resolved = by_result.get("won", 0) + by_result.get("lost", 0)
 
-    totals = (
-        await db.execute(
-            select(
-                func.coalesce(func.sum(PaperBet.stake_units), 0),
-                func.coalesce(func.sum(PaperBet.profit_units), 0),
-            ).where(PaperBet.result.in_(["won", "lost", "void"]))
-        )
-    ).one()
+    totals_query = select(
+        func.coalesce(func.sum(PaperBet.stake_units), 0),
+        func.coalesce(func.sum(PaperBet.profit_units), 0),
+    ).where(PaperBet.result.in_(["won", "lost", "void"]))
+    if source_filter is not None:
+        totals_query = totals_query.where(source_filter)
+    totals = (await db.execute(totals_query)).one()
     total_staked = float(totals[0])
     total_profit = float(totals[1])
     roi = (total_profit / total_staked * 100.0) if total_staked > 0 else None
     win_rate = (by_result.get("won", 0) / resolved * 100.0) if resolved > 0 else None
 
-    by_source_rows = (
-        await db.execute(
-            select(
-                PaperBet.source_type,
-                func.count(),
-                func.coalesce(func.sum(PaperBet.profit_units), 0),
-            ).group_by(PaperBet.source_type)
-        )
-    ).all()
-    by_source = {row[0]: {"bets": row[1], "profit_units": float(row[2])} for row in by_source_rows}
+    by_source_query = select(
+        PaperBet.source_type,
+        func.count(),
+        func.coalesce(func.sum(PaperBet.profit_units), 0),
+    ).group_by(PaperBet.source_type)
+    if source_filter is not None:
+        by_source_query = by_source_query.where(source_filter)
+    by_source_rows = (await db.execute(by_source_query)).all()
+    by_source = {
+        row[0]: StatsBreakdown(bets=row[1], profit_units=float(row[2]))
+        for row in by_source_rows
+    }
 
-    by_bm_rows = (
-        await db.execute(
-            select(
-                Bookmaker.key,
-                func.count(),
-                func.coalesce(func.sum(PaperBet.profit_units), 0),
-            )
-            .join(Bookmaker, Bookmaker.id == PaperBet.bookmaker_id)
-            .group_by(Bookmaker.key)
+    by_bm_query = (
+        select(
+            Bookmaker.key,
+            func.count(),
+            func.coalesce(func.sum(PaperBet.profit_units), 0),
         )
-    ).all()
-    by_bookmaker = {row[0]: {"bets": row[1], "profit_units": float(row[2])} for row in by_bm_rows}
+        .join(Bookmaker, Bookmaker.id == PaperBet.bookmaker_id)
+        .group_by(Bookmaker.key)
+    )
+    if source_filter is not None:
+        by_bm_query = by_bm_query.where(source_filter)
+    by_bm_rows = (await db.execute(by_bm_query)).all()
+    by_bookmaker = {
+        row[0]: StatsBreakdown(bets=row[1], profit_units=float(row[2]))
+        for row in by_bm_rows
+    }
 
     return StatsResponse(
         total_bets=total,
@@ -150,4 +171,135 @@ async def paper_stats(db: AsyncSession = Depends(get_db)):
         win_rate_pct=win_rate,
         by_source=by_source,
         by_bookmaker=by_bookmaker,
+    )
+
+
+class CLVBreakdown(BaseModel):
+    bets: int
+    avg_clv_pct: float
+    avg_log_clv: float
+
+
+class CLVResponse(BaseModel):
+    total_bets: int
+    bets_with_clv: int
+    coverage_pct: float
+    avg_clv_pct: float | None
+    median_clv_pct: float | None
+    avg_log_clv: float | None
+    positive_count: int
+    zero_count: int
+    negative_count: int
+    by_source: dict[str, CLVBreakdown]
+    by_bookmaker: dict[str, CLVBreakdown]
+
+
+@router.get("/clv", response_model=CLVResponse)
+async def paper_clv(
+    source_type: str | None = None,
+    bookmaker_key: str | None = None,
+    result: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Closing Line Value: cuánto batiste a la línea de cierre en promedio.
+
+    CLV positivo = tomaste cuotas mejores que el cierre → señal de skill.
+    Mejor predictor del edge real que el ROI a corto plazo (varianza dominante).
+    """
+    base_filters = []
+    if source_type:
+        base_filters.append(PaperBet.source_type == source_type)
+    if bookmaker_key:
+        base_filters.append(Bookmaker.key == bookmaker_key)
+    if result:
+        base_filters.append(PaperBet.result == result)
+
+    total_query = (
+        select(func.count())
+        .select_from(PaperBet)
+        .join(Bookmaker, Bookmaker.id == PaperBet.bookmaker_id)
+    )
+    if base_filters:
+        total_query = total_query.where(*base_filters)
+    total_bets = (await db.execute(total_query)).scalar_one()
+
+    rows_query = (
+        select(
+            PaperBet.odds_taken,
+            PaperBet.closing_odds,
+            PaperBet.source_type,
+            Bookmaker.key,
+        )
+        .join(Bookmaker, Bookmaker.id == PaperBet.bookmaker_id)
+        .where(PaperBet.closing_odds.is_not(None))
+    )
+    if base_filters:
+        rows_query = rows_query.where(*base_filters)
+    rows = (await db.execute(rows_query)).all()
+
+    bets_with_clv = len(rows)
+    coverage = (bets_with_clv / total_bets * 100.0) if total_bets > 0 else 0.0
+
+    if bets_with_clv == 0:
+        return CLVResponse(
+            total_bets=total_bets,
+            bets_with_clv=0,
+            coverage_pct=0.0,
+            avg_clv_pct=None,
+            median_clv_pct=None,
+            avg_log_clv=None,
+            positive_count=0,
+            zero_count=0,
+            negative_count=0,
+            by_source={},
+            by_bookmaker={},
+        )
+
+    clv_pcts: list[float] = []
+    log_clvs: list[float] = []
+    pos = neg = zero = 0
+    by_source_acc: dict[str, list[tuple[float, float]]] = {}
+    by_bm_acc: dict[str, list[tuple[float, float]]] = {}
+
+    for odds_taken, closing_odds, src, bm_key in rows:
+        # closing_odds puede salir como Decimal('0') si quedó mal; saltarlo para evitar div/0.
+        if closing_odds is None or float(closing_odds) <= 0:
+            continue
+        ot = float(odds_taken)
+        co = float(closing_odds)
+        clv = ot / co - 1.0
+        log_clv = math.log(ot / co)
+        clv_pcts.append(clv)
+        log_clvs.append(log_clv)
+        if clv > 0:
+            pos += 1
+        elif clv < 0:
+            neg += 1
+        else:
+            zero += 1
+        by_source_acc.setdefault(src, []).append((clv, log_clv))
+        by_bm_acc.setdefault(bm_key, []).append((clv, log_clv))
+
+    def _summarize(items: list[tuple[float, float]]) -> CLVBreakdown:
+        clvs = [c for c, _ in items]
+        logs = [lg for _, lg in items]
+        return CLVBreakdown(
+            bets=len(items),
+            avg_clv_pct=statistics.fmean(clvs),
+            avg_log_clv=statistics.fmean(logs),
+        )
+
+    return CLVResponse(
+        total_bets=total_bets,
+        bets_with_clv=bets_with_clv,
+        coverage_pct=round(coverage, 2),
+        avg_clv_pct=statistics.fmean(clv_pcts),
+        median_clv_pct=statistics.median(clv_pcts),
+        avg_log_clv=statistics.fmean(log_clvs),
+        positive_count=pos,
+        zero_count=zero,
+        negative_count=neg,
+        by_source={k: _summarize(v) for k, v in by_source_acc.items()},
+        by_bookmaker={k: _summarize(v) for k, v in by_bm_acc.items()},
     )

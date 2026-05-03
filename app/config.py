@@ -31,14 +31,33 @@ class Settings(BaseSettings):
     ARB_MAX_HOURS_TO_KICKOFF: int = 72
     # Minimum EV for value detection (0.01 = 1%). Lower with sharp reference; higher with consensus.
     VALUE_MIN_EV: float = 0.03
+    # Interruptor general de la detección de value bets. En false, el scheduler
+    # no registra el job `detect_value` — las oportunidades existentes y su
+    # histórico permanecen en DB pero no se generan nuevas.
+    VALUE_DETECTION_ENABLED: bool = True
     # Scheduler intervals (seconds). Defaults are quota-safe for The Odds API free tier.
     # Drop to 30-60s only with paid plans — polling costs one request per league per interval.
     SCHEDULER_FETCH_ODDS_SECONDS: int = 15 * 60
     SCHEDULER_DETECT_SECONDS: int = 15 * 60
     SCHEDULER_SCORES_SECONDS: int = 30 * 60
+    # Franja horaria UTC en la que fetch_odds se salta la llamada externa para
+    # ahorrar créditos. `start` inclusivo, `end` exclusivo, con wraparound si
+    # start > end (ej. 22..6 = 22:00-05:59 UTC). Ambos iguales = sin skip.
+    # Default 4..12 UTC cubre 00:00-07:59 CLT (UTC-4), franja donde no hay
+    # fútbol europeo ni MLB activo y la data histórica muestra cero arbs.
+    FETCH_ODDS_QUIET_START_UTC: int = 4
+    FETCH_ODDS_QUIET_END_UTC: int = 12
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""
+    # Chat al que se envían alertas de infraestructura (jobs falando,
+    # API key inválida, etc.). Vacío = alertas admin silenciadas.
+    ADMIN_TELEGRAM_CHAT_ID: str = ""
+
+    # Salud de jobs: tras N fallos consecutivos del mismo job, se dispara
+    # una alerta admin. La alerta se manda UNA vez por incidente — si
+    # sigue fallando, no spamea.
+    JOB_FAILURE_ALERT_THRESHOLD: int = 3
 
     # SMTP (Email)
     SMTP_HOST: str = ""
@@ -50,6 +69,23 @@ class Settings(BaseSettings):
     # App
     APP_ENV: str = "development"
     DEBUG: bool = True
+    # Formato de logs: 'text' (legible en dev) o 'json' (parsing por log
+    # shippers en prod). Vacío = auto: 'text' si APP_ENV=='development'
+    # else 'json'.
+    LOG_FORMAT: str = ""
+    LOG_LEVEL: str = ""
+
+    @property
+    def resolved_log_format(self) -> str:
+        if self.LOG_FORMAT:
+            return self.LOG_FORMAT
+        return "text" if self.APP_ENV == "development" else "json"
+
+    @property
+    def resolved_log_level(self) -> str:
+        if self.LOG_LEVEL:
+            return self.LOG_LEVEL
+        return "DEBUG" if self.DEBUG else "INFO"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

@@ -2,7 +2,15 @@
 
 import pytest
 
+from app.config import settings
 from app.workers import scheduler as scheduler_module
+
+
+@pytest.fixture(autouse=True)
+def _force_value_detection_enabled(monkeypatch):
+    """Los tests asumen los 6 jobs registrados; VALUE_DETECTION_ENABLED puede
+    estar en false en el .env local, así que lo forzamos a True aquí."""
+    monkeypatch.setattr(settings, "VALUE_DETECTION_ENABLED", True)
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +68,14 @@ class TestConfigureScheduler:
         scheduler_module.configure_scheduler()
         for job in scheduler_module.scheduler.get_jobs():
             assert job.max_instances == 1
+
+    def test_skips_detect_value_when_disabled(self, monkeypatch):
+        """VALUE_DETECTION_ENABLED=false omite el job detect_value del scheduler."""
+        monkeypatch.setattr(settings, "VALUE_DETECTION_ENABLED", False)
+        scheduler_module.configure_scheduler()
+        job_ids = {job.id for job in scheduler_module.scheduler.get_jobs()}
+        assert "detect_value" not in job_ids
+        assert "detect_arbitrage" in job_ids  # otros siguen registrados
 
 
 class TestStartScheduler:

@@ -63,7 +63,7 @@ def patch_notifier(monkeypatch):
         def fake_get(channel: str):
             return notifier
 
-        monkeypatch.setattr(notif_service_module, "_get_notifier", fake_get)
+        monkeypatch.setattr(notif_service_module, "get_notifier", fake_get)
         return notifier
 
     return _apply

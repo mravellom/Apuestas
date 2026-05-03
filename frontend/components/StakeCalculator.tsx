@@ -2,14 +2,17 @@
 
 import { useMemo, useState } from "react";
 
+import { formatMoney } from "@/lib/format";
 import type { ArbitrageLeg } from "@/lib/types";
 
 interface Props {
   legs: ArbitrageLeg[];
   profitPct: number;
+  /** Moneda para mostrar en el preview. Default "USD". */
+  currency?: string;
 }
 
-export function StakeCalculator({ legs, profitPct }: Props) {
+export function StakeCalculator({ legs, profitPct, currency = "USD" }: Props) {
   const [capital, setCapital] = useState(100);
 
   const rows = useMemo(
@@ -31,12 +34,12 @@ export function StakeCalculator({ legs, profitPct }: Props) {
       <div className="mb-4 flex items-end gap-4">
         <div className="flex flex-col gap-1">
           <label className="text-xs uppercase tracking-wide text-muted">
-            Capital a invertir (€)
+            Capital a invertir ({currency})
           </label>
           <input
             type="number"
             min="1"
-            step="10"
+            step="any"
             value={capital}
             onChange={(e) => setCapital(Math.max(1, Number(e.target.value) || 0))}
             className="w-40 rounded border border-border bg-bg px-3 py-2 text-sm text-white"
@@ -45,11 +48,11 @@ export function StakeCalculator({ legs, profitPct }: Props) {
         <div className="ml-auto text-right text-sm">
           <div className="text-muted">Payout garantizado</div>
           <div className="font-mono text-lg text-accent">
-            € {guaranteedPayout.toFixed(2)}
+            {formatMoney(guaranteedPayout, currency)}
           </div>
           <div className="text-xs text-muted">
             Beneficio neto:{" "}
-            <span className="text-accent">€ {netProfit.toFixed(2)}</span>
+            <span className="text-accent">{formatMoney(netProfit, currency)}</span>
           </div>
         </div>
       </div>
@@ -61,8 +64,8 @@ export function StakeCalculator({ legs, profitPct }: Props) {
             <th className="px-3 py-2 text-left">Bookmaker</th>
             <th className="px-3 py-2 text-right">Cuota</th>
             <th className="px-3 py-2 text-right">% stake</th>
-            <th className="px-3 py-2 text-right">€ stake</th>
-            <th className="px-3 py-2 text-right">€ payout</th>
+            <th className="px-3 py-2 text-right">Stake</th>
+            <th className="px-3 py-2 text-right">Payout</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -75,10 +78,10 @@ export function StakeCalculator({ legs, profitPct }: Props) {
                 {(row.stake_pct * 100).toFixed(2)}%
               </td>
               <td className="px-3 py-2 text-right font-mono">
-                € {row.stake.toFixed(2)}
+                {formatMoney(row.stake, currency)}
               </td>
               <td className="px-3 py-2 text-right font-mono text-accent">
-                € {row.payout.toFixed(2)}
+                {formatMoney(row.payout, currency)}
               </td>
             </tr>
           ))}

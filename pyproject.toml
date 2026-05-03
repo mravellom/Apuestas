@@ -18,6 +18,8 @@ dependencies = [
     "rapidfuzz>=3.0.0",
     "email-validator>=2.0.0",
     "slowapi>=0.1.9",
+    "prometheus-fastapi-instrumentator>=7.0.0",
+    "python-json-logger>=2.0.0",
 ]
 
 [project.optional-dependencies]

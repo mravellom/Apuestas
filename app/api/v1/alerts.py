@@ -1,13 +1,24 @@
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.api.deps import DB, PremiumUser
 from app.models.alert import AlertConfig
+from app.notifications.service import build_test_payload, get_notifier
 from app.schemas.alert import AlertConfigCreate, AlertConfigResponse, AlertConfigUpdate
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+
+class AlertTestResponse(BaseModel):
+    """Resultado de un envío de prueba al canal configurado."""
+    ok: bool
+    error: str | None = None
 
 
 @router.get("/config", response_model=list[AlertConfigResponse])
@@ -61,3 +72,40 @@ async def delete_alert(alert_id: int, db: DB, user: PremiumUser):
         raise HTTPException(status_code=404, detail="Alert config not found")
 
     await db.delete(alert)
+
+
+@router.post("/config/{alert_id}/test", response_model=AlertTestResponse)
+async def test_alert(alert_id: int, db: DB, user: PremiumUser):
+    """
+    Dispara un envío de prueba al canal configurado en este alert. Útil para
+    validar credenciales (token Telegram, SMTP, URL webhook) sin esperar a
+    que aparezca una oportunidad real.
+
+    No persiste nada — el resultado se devuelve inline. Errores del canal
+    (timeout, auth) se devuelven como `{ok: false, error: "..."}` para que
+    la UI los muestre, no como 5xx.
+    """
+    alert = await db.get(AlertConfig, alert_id)
+    if not alert or alert.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Alert config not found")
+
+    payload = build_test_payload()
+    try:
+        notifier = get_notifier(alert.channel)
+    except ValueError as e:
+        # Canal corrupto en DB — muy poco probable porque create_alert no lo
+        # permite, pero defensivo.
+        return AlertTestResponse(ok=False, error=str(e))
+
+    try:
+        success = await notifier.send(alert.destination, payload)
+    except Exception as e:
+        logger.warning("Test alert %d failed: %s", alert_id, e)
+        return AlertTestResponse(ok=False, error=f"{type(e).__name__}: {e}")
+
+    if not success:
+        return AlertTestResponse(
+            ok=False,
+            error="El canal aceptó la llamada pero reportó fallo. Revisa logs del servidor para detalle.",
+        )
+    return AlertTestResponse(ok=True)

@@ -237,3 +237,163 @@ class TestDeleteAlert:
             "/api/v1/alerts/config/9999", headers=premium_headers
         )
         assert response.status_code == 404
+
+
+class TestAlertTest:
+    """POST /alerts/config/{id}/test — envío de prueba al canal configurado."""
+
+    async def test_test_missing_returns_404(self, client, premium_headers):
+        response = await client.post(
+            "/api/v1/alerts/config/9999/test", headers=premium_headers
+        )
+        assert response.status_code == 404
+
+    async def test_test_other_users_alert_returns_404(
+        self, client, premium_headers, test_user, db_session
+    ):
+        alert = AlertConfig(
+            user_id=test_user.id,
+            channel="telegram",
+            destination="foreign",
+            min_value_pct=Decimal("0.05"),
+            active=True,
+        )
+        db_session.add(alert)
+        await db_session.commit()
+        await db_session.refresh(alert)
+
+        response = await client.post(
+            f"/api/v1/alerts/config/{alert.id}/test", headers=premium_headers
+        )
+        assert response.status_code == 404
+
+    async def test_test_dispatches_to_notifier(
+        self, client, premium_headers, premium_user, db_session, monkeypatch
+    ):
+        alert = AlertConfig(
+            user_id=premium_user.id,
+            channel="telegram",
+            destination="chat-test",
+            min_value_pct=Decimal("0.05"),
+            active=True,
+        )
+        db_session.add(alert)
+        await db_session.commit()
+        await db_session.refresh(alert)
+
+        # Stub notifier para evitar tocar Telegram real. Capturamos los
+        # argumentos para validar que el endpoint pasa el destination
+        # correcto y un payload de tipo NotificationPayload (no ArbitragePayload).
+        from app.notifications import service as notif_service
+        from app.notifications.base import NotificationPayload, Notifier
+
+        captured = {}
+
+        class StubNotifier(Notifier):
+            async def send(self, destination, payload):
+                captured["destination"] = destination
+                captured["payload_type"] = type(payload).__name__
+                captured["match_home"] = payload.match_home
+                return True
+
+        monkeypatch.setattr(notif_service, "_NOTIFIERS", {})
+        monkeypatch.setattr(
+            notif_service,
+            "get_notifier",
+            lambda channel: StubNotifier(),
+        )
+        # alerts.py importa get_notifier por nombre — re-monkeypatch.
+        from app.api.v1 import alerts as alerts_router
+        monkeypatch.setattr(alerts_router, "get_notifier", lambda channel: StubNotifier())
+
+        response = await client.post(
+            f"/api/v1/alerts/config/{alert.id}/test", headers=premium_headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"ok": True, "error": None}
+        assert captured["destination"] == "chat-test"
+        assert captured["payload_type"] == "NotificationPayload"
+        # El payload de prueba debe tener marcadores explícitos para que
+        # quien lo recibe sepa que no es real.
+        assert "TEST" in captured["match_home"]
+
+    async def test_test_returns_failure_when_notifier_returns_false(
+        self, client, premium_headers, premium_user, db_session, monkeypatch
+    ):
+        alert = AlertConfig(
+            user_id=premium_user.id,
+            channel="telegram",
+            destination="chat-fail",
+            min_value_pct=Decimal("0.05"),
+            active=True,
+        )
+        db_session.add(alert)
+        await db_session.commit()
+        await db_session.refresh(alert)
+
+        from app.notifications.base import Notifier
+
+        class FailingNotifier(Notifier):
+            async def send(self, destination, payload):
+                return False
+
+        from app.api.v1 import alerts as alerts_router
+        monkeypatch.setattr(alerts_router, "get_notifier", lambda channel: FailingNotifier())
+
+        response = await client.post(
+            f"/api/v1/alerts/config/{alert.id}/test", headers=premium_headers
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is False
+        assert body["error"] is not None
+
+    async def test_test_returns_failure_when_notifier_raises(
+        self, client, premium_headers, premium_user, db_session, monkeypatch
+    ):
+        alert = AlertConfig(
+            user_id=premium_user.id,
+            channel="telegram",
+            destination="chat-raise",
+            min_value_pct=Decimal("0.05"),
+            active=True,
+        )
+        db_session.add(alert)
+        await db_session.commit()
+        await db_session.refresh(alert)
+
+        from app.notifications.base import Notifier
+
+        class RaisingNotifier(Notifier):
+            async def send(self, destination, payload):
+                raise RuntimeError("auth invalid")
+
+        from app.api.v1 import alerts as alerts_router
+        monkeypatch.setattr(alerts_router, "get_notifier", lambda channel: RaisingNotifier())
+
+        response = await client.post(
+            f"/api/v1/alerts/config/{alert.id}/test", headers=premium_headers
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is False
+        assert "auth invalid" in body["error"]
+
+    async def test_test_free_user_forbidden(
+        self, client, auth_headers, test_user, db_session
+    ):
+        alert = AlertConfig(
+            user_id=test_user.id,
+            channel="telegram",
+            destination="chat-free",
+            min_value_pct=Decimal("0.05"),
+            active=True,
+        )
+        db_session.add(alert)
+        await db_session.commit()
+        await db_session.refresh(alert)
+
+        response = await client.post(
+            f"/api/v1/alerts/config/{alert.id}/test", headers=auth_headers
+        )
+        assert response.status_code == 403

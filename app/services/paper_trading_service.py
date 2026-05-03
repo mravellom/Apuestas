@@ -11,16 +11,18 @@ engine genera ROI positivo antes de arriesgar dinero real.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.portfolio import PortfolioBet, allocate_portfolio
 from app.core.value_detector import ValueBet
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
-from app.models.market import Outcome
+from app.models.market import Market, MarketType, Outcome
 from app.models.match import Match
 from app.models.opportunity import Opportunity
 from app.models.paper import PaperBet
@@ -32,17 +34,128 @@ logger = logging.getLogger(__name__)
 # Units = fraction of bankroll, so 0.01 = 1% flat.
 DEFAULT_STAKE_UNITS = Decimal("0.01")
 
+# Paper trading replica el comportamiento real del usuario: 1/4 Kelly con cap.
+# Sin esto, paper apostaba `kelly_full` crudo (puede ser 20-30% del bankroll en
+# señales fuertes), divergiendo del P&L que el usuario realmente realizaría.
+PAPER_KELLY_FRACTION = Decimal("0.25")
+PAPER_MAX_STAKE_UNITS = Decimal("0.05")  # cap 5% del bankroll por bet
+
+# Cap de exposición total simultánea sobre value bets pending. Sumar Kelly individual
+# en N señales de un día puede exceder fácilmente el bankroll; este cap modela el
+# techo agregado que un operador disciplinado mantiene. Arbitraje queda fuera del
+# cómputo (las legs están hedgeadas — el riesgo neto es muy menor que la suma).
+PAPER_MAX_TOTAL_EXPOSURE_UNITS = Decimal("0.20")  # 20% del bankroll en juego
+
+
+@dataclass
+class PendingValueBet:
+    """Item interno: opportunity + value-bet para batch allocation."""
+
+    opportunity: Opportunity
+    vb: ValueBet
+    match_id: int
+
 
 class PaperTradingService:
+    async def record_batch_value_bets(
+        self,
+        db: AsyncSession,
+        items: list[PendingValueBet],
+    ) -> list[PaperBet]:
+        """Sizing portfolio en batch: agrupa por match, aplica caps y exposición total.
+
+        Invocado al final de un ciclo de detección. Decide qué Opportunities
+        merecen un PaperBet y con qué stake, considerando todas las señales
+        simultáneas (no greedy first-come-first-served).
+        """
+        if not items:
+            return []
+
+        current_exposure = (
+            await db.execute(
+                select(func.coalesce(func.sum(PaperBet.stake_units), 0)).where(
+                    PaperBet.source_type == "value",
+                    PaperBet.result == "pending",
+                )
+            )
+        ).scalar_one()
+        available = float(PAPER_MAX_TOTAL_EXPOSURE_UNITS) - float(current_exposure)
+
+        portfolio_input = [
+            PortfolioBet(
+                bet_id=str(it.opportunity.id),
+                match_id=it.match_id,
+                raw_kelly=it.vb.kelly_full,
+            )
+            for it in items
+        ]
+        allocations = allocate_portfolio(
+            portfolio_input,
+            available_exposure=available,
+            kelly_fraction=float(PAPER_KELLY_FRACTION),
+            per_bet_cap=float(PAPER_MAX_STAKE_UNITS),
+        )
+        alloc_by_id = {a.bet_id: a for a in allocations}
+
+        created: list[PaperBet] = []
+        for it in items:
+            alloc = alloc_by_id.get(str(it.opportunity.id))
+            if alloc is None or alloc.skipped or alloc.stake <= 0:
+                continue
+            paper = PaperBet(
+                source_type="value",
+                opportunity_id=it.opportunity.id,
+                match_id=it.match_id,
+                outcome_id=it.opportunity.outcome_id,
+                bookmaker_id=it.opportunity.bookmaker_id,
+                odds_taken=Decimal(str(it.vb.bookmaker_odds)),
+                stake_units=Decimal(str(round(alloc.stake, 5))),
+                ev_at_placement=Decimal(str(it.vb.value_pct)),
+            )
+            db.add(paper)
+            created.append(paper)
+        if created:
+            await db.flush()
+        return created
+
     async def record_value_bet(
         self,
         db: AsyncSession,
         opportunity: Opportunity,
         vb: ValueBet,
         match_id: int,
-    ) -> PaperBet:
-        """Registra una paper bet a partir de una value bet recién detectada."""
-        stake = Decimal(str(vb.kelly_full)) if vb.kelly_full > 0 else DEFAULT_STAKE_UNITS
+    ) -> PaperBet | None:
+        """Registra una paper bet a partir de una value bet recién detectada.
+
+        Aplica cap de exposición total: si la suma de stakes pending de value bets
+        ya alcanzó `PAPER_MAX_TOTAL_EXPOSURE_UNITS`, omite el registro.
+        """
+        if vb.kelly_full > 0:
+            fractional = Decimal(str(vb.kelly_full)) * PAPER_KELLY_FRACTION
+            desired_stake = min(fractional, PAPER_MAX_STAKE_UNITS)
+        else:
+            desired_stake = DEFAULT_STAKE_UNITS
+
+        current_exposure = (
+            await db.execute(
+                select(func.coalesce(func.sum(PaperBet.stake_units), 0)).where(
+                    PaperBet.source_type == "value",
+                    PaperBet.result == "pending",
+                )
+            )
+        ).scalar_one()
+        current_exposure = Decimal(str(current_exposure))
+        available = PAPER_MAX_TOTAL_EXPOSURE_UNITS - current_exposure
+
+        if available <= 0:
+            logger.info(
+                "Paper exposure cap reached (%s units pending); skipping new value bet",
+                current_exposure,
+            )
+            return None
+
+        stake = min(desired_stake, available)
+
         paper = PaperBet(
             source_type="value",
             opportunity_id=opportunity.id,
@@ -99,7 +212,10 @@ class PaperTradingService:
         """Liquida todas las paper bets pendientes de un partido terminado.
 
         Requiere match.home_score y match.away_score. Decide el outcome ganador
-        comparando scores. Asume mercado h2h con outcome.key ∈ {team_key, 'draw'}.
+        según el market_type: h2h (team_key o 'draw'), totals (over/under vs
+        la línea en market.parameter), o void si empate a la línea. Mercados
+        no soportados (p. ej. spreads sin point por outcome) se cuentan como
+        skipped y el paper bet queda pending.
         """
         if match.home_score is None or match.away_score is None:
             return {"settled": 0, "skipped": 0}
@@ -107,34 +223,46 @@ class PaperTradingService:
         home = (await db.execute(select(Team).where(Team.id == match.home_team_id))).scalar_one()
         away = (await db.execute(select(Team).where(Team.id == match.away_team_id))).scalar_one()
 
-        if match.home_score > match.away_score:
-            winning_key = home.canonical_name.lower().replace(" ", "_")
-        elif match.away_score > match.home_score:
-            winning_key = away.canonical_name.lower().replace(" ", "_")
-        else:
-            winning_key = "draw"
-
         pending = (
             await db.execute(
-                select(PaperBet, Outcome)
+                select(PaperBet, Outcome, Market, MarketType)
                 .join(Outcome, Outcome.id == PaperBet.outcome_id)
+                .join(Market, Market.id == Outcome.market_id)
+                .join(MarketType, MarketType.id == Market.market_type_id)
                 .where(PaperBet.match_id == match.id, PaperBet.result == "pending")
             )
         ).all()
 
         settled = 0
+        skipped = 0
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        for paper, outcome in pending:
-            if outcome.key.lower() == winning_key:
+        for paper, outcome, market, market_type in pending:
+            verdict = _decide_paper_bet_result(
+                market_type.key,
+                outcome.key,
+                market.parameter,
+                match.home_score,
+                match.away_score,
+                home.canonical_name,
+                away.canonical_name,
+            )
+            if verdict is None:
+                skipped += 1
+                continue
+
+            if verdict == "won":
                 paper.result = "won"
                 paper.profit_units = paper.stake_units * (paper.odds_taken - Decimal("1"))
-            else:
+            elif verdict == "lost":
                 paper.result = "lost"
                 paper.profit_units = -paper.stake_units
+            else:  # void (push)
+                paper.result = "void"
+                paper.profit_units = Decimal("0")
             paper.resolved_at = now
             settled += 1
 
-        return {"settled": settled, "skipped": 0}
+        return {"settled": settled, "skipped": skipped}
 
     async def settle_all_completed(self, db: AsyncSession) -> dict[str, int]:
         """Liquida todos los partidos completados con scores y apuestas pendientes."""
@@ -159,3 +287,47 @@ class PaperTradingService:
             total["matches"] += 1
         await db.commit()
         return total
+
+
+def _decide_paper_bet_result(
+    market_type_key: str,
+    outcome_key: str,
+    market_parameter,
+    home_score: int,
+    away_score: int,
+    home_name: str,
+    away_name: str,
+) -> str | None:
+    """Devuelve 'won' | 'lost' | 'void' (push) o None si no se sabe liquidar.
+
+    Soporta h2h y totals. Para otros mercados (spreads, BTTS, etc.) devuelve
+    None y el caller cuenta el paper bet como skipped (queda `pending`).
+    """
+    key = outcome_key.lower()
+
+    if market_type_key == "h2h":
+        if home_score > away_score:
+            winner = home_name.lower().replace(" ", "_")
+        elif away_score > home_score:
+            winner = away_name.lower().replace(" ", "_")
+        else:
+            winner = "draw"
+        return "won" if key == winner else "lost"
+
+    if market_type_key == "totals":
+        if market_parameter is None:
+            return None
+        try:
+            line = float(market_parameter)
+        except (TypeError, ValueError):
+            return None
+        total = home_score + away_score
+        if total == line:
+            return "void"
+        if key == "over":
+            return "won" if total > line else "lost"
+        if key == "under":
+            return "won" if total < line else "lost"
+        return None
+
+    return None

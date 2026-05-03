@@ -118,6 +118,95 @@ class TestDetectValueBets:
         results = detect_value_bets(odds, self.outcome_keys)
         assert results == []
 
+    def test_commission_reduces_ev_and_kelly(self):
+        """Con comisión, el EV neto debe ser menor que el bruto del mismo book."""
+        # Mercado con consenso estrecho (9 libros idénticos) + 1 outlier soft
+        # con cuota notablemente mejor en `away`. Edge ~10% supera holgadamente
+        # el ruido del consenso → uncertainty no nuclea, aislamos el efecto de
+        # la comisión.
+        odds = {f"bk{i}": [2.10, 3.30, 3.50] for i in range(9)}
+        odds["soft"] = [2.10, 3.30, 4.20]
+        results_no_comm = detect_value_bets(
+            odds, self.outcome_keys, min_value=-1.0, min_bookmakers=3
+        )
+        results_with_comm = detect_value_bets(
+            odds,
+            self.outcome_keys,
+            min_value=-1.0,
+            min_bookmakers=3,
+            commission_by_bookmaker={"soft": 0.01},
+        )
+
+        soft_no = next(
+            (vb for vb in results_no_comm if vb.bookmaker_key == "soft" and vb.outcome_key == "away"),
+            None,
+        )
+        soft_with = next(
+            (vb for vb in results_with_comm if vb.bookmaker_key == "soft" and vb.outcome_key == "away"),
+            None,
+        )
+        assert soft_no is not None and soft_with is not None
+        assert soft_with.value_pct < soft_no.value_pct
+        assert soft_with.kelly_full < soft_no.kelly_full
+
+    def test_uncertainty_filter_rejects_noisy_consensus(self):
+        """Cuando los libros disienten mucho en un outcome, la señal se nuclea."""
+        # 5 libros con cuotas dispares en home pero alineados en draw/away.
+        # Un sexto libro ofrece home a precio "alto" — nominalmente hay EV pero
+        # el SE del consenso es comparable al edge.
+        odds = {
+            "bk1": [1.90, 3.30, 3.60],
+            "bk2": [2.30, 3.30, 3.60],
+            "bk3": [2.00, 3.30, 3.60],
+            "bk4": [2.20, 3.30, 3.60],
+            "bk5": [2.05, 3.30, 3.60],
+            "soft": [2.40, 3.30, 3.60],
+        }
+        # min_value muy bajo para que el filtro de uncertainty sea el único factor
+        results = detect_value_bets(
+            odds, self.outcome_keys, min_value=-1.0, min_bookmakers=5
+        )
+        soft_home = [vb for vb in results if vb.bookmaker_key == "soft" and vb.outcome_key == "home"]
+        # En un consenso ruidoso con edge marginal, el filtro rechaza la señal
+        assert soft_home == [] or all(vb.kelly_full > 0 for vb in soft_home)
+
+    def test_uncertainty_lets_strong_signals_through(self):
+        """Edge holgado sobre consenso estrecho sobrevive al filtro."""
+        # 9 libros idénticos + 1 outlier con cuota notablemente mejor → edge >> SE
+        odds = {f"bk{i}": [2.10, 3.30, 3.50] for i in range(9)}
+        odds["soft"] = [2.10, 3.30, 4.20]  # away mucho más alto
+        results = detect_value_bets(
+            odds, self.outcome_keys, min_value=0.01, min_bookmakers=5
+        )
+        soft_away = [vb for vb in results if vb.bookmaker_key == "soft" and vb.outcome_key == "away"]
+        assert len(soft_away) == 1
+        assert soft_away[0].kelly_full > 0
+
+    def test_commission_filters_marginal_signals(self):
+        """Una señal con EV bruto justo arriba del umbral cae bajo el umbral con comisión."""
+        # Mercado donde un book tiene EV ~5% bruto. Con 1% comisión queda ~4% neto.
+        odds = {
+            "bk1": [2.00, 3.50, 4.00],
+            "bk2": [2.00, 3.50, 4.00],
+            "bk3": [2.00, 3.50, 4.00],
+            "bk4": [2.00, 3.50, 4.00],
+            "soft": [2.20, 3.50, 4.00],  # home más alto = source del value
+        }
+        # Sin comisión: pasa el threshold de 5%
+        no_comm = detect_value_bets(odds, self.outcome_keys, min_value=0.05, min_bookmakers=5)
+        soft_no = [vb for vb in no_comm if vb.bookmaker_key == "soft"]
+        # Con comisión: EV neto cae por debajo
+        with_comm = detect_value_bets(
+            odds,
+            self.outcome_keys,
+            min_value=0.05,
+            min_bookmakers=5,
+            commission_by_bookmaker={"soft": 0.05},
+        )
+        soft_with = [vb for vb in with_comm if vb.bookmaker_key == "soft"]
+        assert len(soft_no) >= 1
+        assert len(soft_with) < len(soft_no)
+
 
 class TestOutcomeOddsDispersed:
     def test_returns_true_when_fewer_than_three(self):

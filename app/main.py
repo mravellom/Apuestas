@@ -4,11 +4,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.router import router as v1_router
 from app.config import settings
+from app.logging_config import configure_logging
 from app.middleware import RequestLoggingMiddleware
 from app.rate_limit import limiter
 
@@ -19,9 +21,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(application: FastAPI):
     """Startup and shutdown events."""
     # Startup
-    logging.basicConfig(
-        level=logging.DEBUG if settings.DEBUG else logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    configure_logging(
+        level=settings.resolved_log_level,
+        fmt=settings.resolved_log_format,
     )
 
     # Run seed on startup
@@ -65,15 +67,27 @@ def create_app() -> FastAPI:
     application.state.limiter = limiter
     application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     application.add_middleware(RequestLoggingMiddleware)
+    # CORS: con allow_credentials=True la spec prohíbe allow_origins=["*"].
+    # Enumeramos orígenes explícitos del frontend dev + prod.
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://192.168.1.84:3000",  # red local (mobile testing)
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     application.include_router(v1_router)
+
+    # Expone /metrics con latencias HTTP por endpoint (p50/p95/p99, counts).
+    # Las métricas de jobs del scheduler las emite app/metrics.py vía track_job.
+    Instrumentator().instrument(application).expose(
+        application, endpoint="/metrics", include_in_schema=False
+    )
 
     @application.get("/health")
     async def health_check():

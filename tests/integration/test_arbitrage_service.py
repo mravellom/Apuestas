@@ -337,3 +337,101 @@ class TestMinBookmakersConfig:
         loose = ArbitrageDetectionService(min_bookmakers=3)
         counts, _ = await loose.detect_all(db_session)
         assert counts["arbs_found"] >= 1
+
+
+class TestSuspendedOddsFilter:
+    """
+    Reproduce el patrón del falso positivo del arb #80 (Hawks/Knicks, abr 2026):
+    un bookmaker con un outcome a 25.0 y el outcome opuesto a 1.00 (línea
+    suspendida). El detector solía tomar la cuota de 25.0 como "mejor" sin
+    notar que el mismo libro tiene el otro lado congelado, generando arbs
+    fantasma de 2 dígitos.
+    """
+
+    async def test_skips_bookmaker_with_suspended_leg(
+        self, db_session: AsyncSession
+    ):
+        commence = datetime.now(timezone.utc) + timedelta(days=1)
+        await seed_database(db_session)
+
+        # 5 libros con cuotas normales (vig saludable, sin arb real entre ellos).
+        normal_books = [
+            raw("X", "Y", "bet365",
+                [("X", 2.00), ("Draw", 3.30), ("Y", 3.60)], commence),
+            raw("X", "Y", "pinnacle",
+                [("X", 2.05), ("Draw", 3.25), ("Y", 3.55)], commence),
+            raw("X", "Y", "betfair_ex_eu",
+                [("X", 2.08), ("Draw", 3.35), ("Y", 3.45)], commence),
+            raw("X", "Y", "williamhill",
+                [("X", 2.02), ("Draw", 3.28), ("Y", 3.58)], commence),
+            raw("X", "Y", "unibet_eu",
+                [("X", 2.10), ("Draw", 3.20), ("Y", 3.50)], commence),
+        ]
+        # Libro con mercado suspendido: home superalto, draw/away a 1.00.
+        # Sin filtro: best X = 25.0 (ese libro) → arb falso de ~50% profit.
+        suspended_book = raw(
+            "X", "Y", "betsson",
+            [("X", 25.00), ("Draw", 1.00), ("Y", 1.00)],
+            commence,
+        )
+        service = OddsIngestionService(FakeAdapter(normal_books + [suspended_book]))
+        await service.ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_spain_la_liga"]
+        )
+
+        svc = ArbitrageDetectionService(min_bookmakers=5)
+        counts, new_arbs = await svc.detect_all(db_session)
+        assert counts["arbs_found"] == 0, (
+            "Libro con outcome ≤ 1.05 debe quedar fuera; sin filtro habría arb falso"
+        )
+        assert new_arbs == []
+
+    async def test_revalidate_marks_dead_when_book_market_freezes(
+        self, db_session: AsyncSession
+    ):
+        """
+        Si un arb se detectó cuando todos los libros estaban sanos y luego un
+        libro suspende su mercado (cualquier outcome ≤ 1.05), la revalidación
+        debe clasificar el arb como dead — el leg de 25.0 no es ejecutable.
+        """
+        from datetime import datetime as _dt
+        from app.models.bookmaker import Bookmaker
+        from app.models.market import Odds, Outcome
+
+        commence = datetime.now(timezone.utc) + timedelta(days=1)
+        await _ingest_arbitrage_scenario(
+            db_session, home="Sus Home", away="Sus Away", commence=commence
+        )
+
+        svc = ArbitrageDetectionService(min_bookmakers=5)
+        _, new_arbs = await svc.detect_all(db_session)
+        assert len(new_arbs) >= 1
+        arb = new_arbs[0]
+        await db_session.commit()
+
+        # Inyecta cuota suspendida directamente: un libro del arb cuelga otro
+        # outcome del mismo mercado a 1.00.
+        target_bk_key = arb.legs[0]["bookmaker"]
+        target_outcome_key = arb.legs[1]["outcome"]
+        bk = (await db_session.execute(
+            select(Bookmaker).where(Bookmaker.key == target_bk_key)
+        )).scalar_one()
+        outcome = (await db_session.execute(
+            select(Outcome).where(
+                Outcome.market_id == arb.market_id,
+                Outcome.key == target_outcome_key,
+            )
+        )).scalar_one()
+        db_session.add(Odds(
+            outcome_id=outcome.id,
+            bookmaker_id=bk.id,
+            price=Decimal("1.00"),
+            captured_at=_dt.utcnow(),
+            source="test",
+        ))
+        await db_session.commit()
+
+        result = await svc.revalidate_arb(db_session, arb.id)
+        assert result.status == "dead", (
+            f"esperado dead por suspensión, fue {result.status}"
+        )

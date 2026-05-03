@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _NOTIFIERS: dict[str, Notifier] = {}
 
 
-def _get_notifier(channel: str) -> Notifier:
+def get_notifier(channel: str) -> Notifier:
     """Factory de notifiers con cache (singleton por canal)."""
     if channel not in _NOTIFIERS:
         if channel == "telegram":
@@ -33,6 +33,30 @@ def _get_notifier(channel: str) -> Notifier:
         else:
             raise ValueError(f"Unknown notification channel: {channel}")
     return _NOTIFIERS[channel]
+
+
+# Alias retrocompatible — código legado todavía importa _get_notifier.
+_get_notifier = get_notifier
+
+
+def build_test_payload() -> NotificationPayload:
+    """
+    Payload fijo etiquetado como TEST. Usa valores realistas para que el
+    formato del mensaje en cada canal se pueda validar de un vistazo, pero
+    los nombres del partido dejan claro que no es real.
+    """
+    return NotificationPayload(
+        match_home="[TEST] Home",
+        match_away="[TEST] Away",
+        commence_time="2099-01-01 00:00 UTC",
+        market_type="h2h",
+        outcome_name="Home",
+        bookmaker_name="TestBook",
+        odds_price=2.10,
+        value_pct=0.05,
+        consensus_prob=0.50,
+        kelly_stake_pct=0.0125,
+    )
 
 
 class NotificationService:
@@ -76,7 +100,7 @@ class NotificationService:
                         continue
 
                 try:
-                    notifier = _get_notifier(alert.channel)
+                    notifier = get_notifier(alert.channel)
                     success = await notifier.send(alert.destination, payload)
                     if success:
                         counts["sent"] += 1

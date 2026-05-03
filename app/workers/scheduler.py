@@ -33,16 +33,19 @@ def configure_scheduler():
         max_instances=1,
     )
 
-    # Detect value bets tras el fetch
-    scheduler.add_job(
-        detect_value_job,
-        "interval",
-        seconds=settings.SCHEDULER_DETECT_SECONDS,
-        id="detect_value",
-        name="Detect value betting opportunities",
-        replace_existing=True,
-        max_instances=1,
-    )
+    # Detect value bets tras el fetch (solo si está habilitado en settings)
+    if settings.VALUE_DETECTION_ENABLED:
+        scheduler.add_job(
+            detect_value_job,
+            "interval",
+            seconds=settings.SCHEDULER_DETECT_SECONDS,
+            id="detect_value",
+            name="Detect value betting opportunities",
+            replace_existing=True,
+            max_instances=1,
+        )
+    else:
+        logger.info("Value detection disabled via VALUE_DETECTION_ENABLED=false")
 
     # Detect arbitrage (surebets)
     scheduler.add_job(

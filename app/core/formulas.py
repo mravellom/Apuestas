@@ -147,28 +147,129 @@ def consensus_probability(
     Returns:
         Lista de probabilidades consenso para cada outcome.
     """
+    means, _ = consensus_probability_with_std(
+        odds_by_bookmaker, sharp_bookmakers, sharp_weight
+    )
+    return means
+
+
+def consensus_probability_with_std(
+    odds_by_bookmaker: dict[str, list[float]],
+    sharp_bookmakers: set[str] | None = None,
+    sharp_weight: float = 2.0,
+) -> tuple[list[float], list[float]]:
+    """
+    Variante del consenso que retorna también el **standard error** por outcome.
+
+    El SE captura la incertidumbre del estimador del consenso: cuando los libros
+    coinciden mucho, SE → 0 (consenso confiable). Cuando difieren, SE crece.
+    Se usa luego para ajustar Kelly por incertidumbre vía
+    `kelly_criterion_uncertainty_adjusted`.
+
+    Cálculo:
+      mean = mean ponderado de fair_probs entre books (mismo que `consensus_probability`)
+      var_pop = varianza ponderada poblacional
+      eff_n = (Σw)² / Σw²  (Kish's effective sample size)
+      SE = sqrt(var_pop / eff_n)
+
+    Returns:
+        (means, stds) — listas paralelas con el consenso y su SE por outcome.
+    """
     if not odds_by_bookmaker:
         raise ValueError("No bookmaker odds provided")
 
     sharp_bookmakers = sharp_bookmakers or set()
     num_outcomes = len(next(iter(odds_by_bookmaker.values())))
 
-    weighted_probs: list[float] = [0.0] * num_outcomes
-    total_weight = 0.0
-
+    samples_per_outcome: list[list[tuple[float, float]]] = [
+        [] for _ in range(num_outcomes)
+    ]
     for bookmaker, odds_list in odds_by_bookmaker.items():
         if len(odds_list) != num_outcomes:
             continue
         fair_probs = odds_to_fair_probs(odds_list)
         weight = sharp_weight if bookmaker in sharp_bookmakers else 1.0
         for i, prob in enumerate(fair_probs):
-            weighted_probs[i] += prob * weight
-        total_weight += weight
+            samples_per_outcome[i].append((prob, weight))
 
-    if total_weight <= 0:
+    if not any(samples_per_outcome):
         raise ValueError("No valid bookmaker data")
 
-    return [p / total_weight for p in weighted_probs]
+    means: list[float] = []
+    stds: list[float] = []
+    for samples in samples_per_outcome:
+        if not samples:
+            means.append(0.0)
+            stds.append(0.0)
+            continue
+        total_w = sum(w for _, w in samples)
+        if total_w <= 0:
+            means.append(0.0)
+            stds.append(0.0)
+            continue
+        mean = sum(p * w for p, w in samples) / total_w
+        var_pop = sum(w * (p - mean) ** 2 for p, w in samples) / total_w
+        sum_w_sq = sum(w * w for _, w in samples)
+        eff_n = (total_w * total_w) / sum_w_sq if sum_w_sq > 0 else len(samples)
+        se = (var_pop / eff_n) ** 0.5 if eff_n > 0 else 0.0
+        means.append(mean)
+        stds.append(se)
+
+    return means, stds
+
+
+def kelly_criterion_uncertainty_adjusted(
+    probability: float,
+    decimal_odds: float,
+    prob_std: float,
+    commission_pct: float = 0.0,
+) -> float:
+    """
+    Kelly ajustado por incertidumbre en `probability`.
+
+    Cuando `probability` es un estimador con error estándar `prob_std`, apostar
+    el Kelly completo es sub-óptimo: una fracción del edge aparente puede ser
+    ruido. La corrección estándar (Vince/Sinclair) es:
+
+        f_adjusted = f_kelly × max(0, 1 − Var[edge] / E[edge]²)
+
+    donde:
+        E[edge] = p · odds − 1                         (EV neto si sin comisión)
+        Var[edge] = odds² · σ²_p                       (linealización: edge es lineal en p)
+
+    Si σ_edge ≥ E[edge] (la incertidumbre supera al edge esperado) → f = 0:
+    no apostar.
+
+    Args:
+        probability: estimador de la probabilidad real.
+        decimal_odds: cuota decimal del libro.
+        prob_std: standard error del estimador `probability`.
+        commission_pct: comisión sobre profit (0-1).
+
+    Returns:
+        Fracción Kelly óptima bajo incertidumbre, o 0 si la señal es ruido.
+    """
+    f_kelly = kelly_criterion_net(probability, decimal_odds, commission_pct)
+    if f_kelly <= 0:
+        return 0.0
+    if prob_std <= 0:
+        return f_kelly
+
+    edge = value_calculation_net(probability, decimal_odds, commission_pct)
+    if edge <= 0:
+        return 0.0
+
+    # Linealización: edge = p·odds_eff − 1 → ∂edge/∂p = odds_eff. Para preservar
+    # consistencia con el Kelly que ya usa odds efectivas post-comisión, usamos
+    # la misma cuota efectiva aquí.
+    effective_odds = (
+        1.0 + (decimal_odds - 1.0) * (1.0 - commission_pct)
+        if commission_pct > 0
+        else decimal_odds
+    )
+    sigma_edge = effective_odds * prob_std
+    shrinkage = max(0.0, 1.0 - (sigma_edge * sigma_edge) / (edge * edge))
+    return f_kelly * shrinkage
 
 
 def calculate_roi(total_profit: float, total_staked: float) -> float:

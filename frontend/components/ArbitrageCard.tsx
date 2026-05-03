@@ -2,25 +2,39 @@
 
 import Link from "next/link";
 
+import { sportAccentColor } from "@/lib/sportColors";
 import type { Arbitrage } from "@/lib/types";
-import { formatDate, formatPct, minutesUntil } from "@/lib/format";
+import { formatDate, formatMoney, formatPct, minutesUntil } from "@/lib/format";
 
 interface Props {
   arb: Arbitrage;
   capital: number;
+  currency?: string;
 }
 
-export function ArbitrageCard({ arb, capital }: Props) {
+export function ArbitrageCard({ arb, capital, currency = "USD" }: Props) {
   const minutes = minutesUntil(arb.commence_time);
   const guaranteed = capital * (1 + arb.profit_pct / 100);
   const netProfit = guaranteed - capital;
+  const accent = sportAccentColor(arb.sport, arb.league);
+  const leagueLabel = prettyLeague(arb.league, arb.sport);
 
   return (
-    <article className="overflow-hidden rounded-lg border border-border bg-surface">
+    <article
+      className="overflow-hidden rounded-lg border-2 bg-surface"
+      style={{ borderColor: accent }}
+    >
       {/* Header */}
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-bg px-5 py-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
+            <span
+              className="rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white"
+              style={{ backgroundColor: accent }}
+              title={`${arb.sport} · ${arb.league}`}
+            >
+              {leagueLabel}
+            </span>
             <h3 className="truncate text-base font-semibold text-white">
               {arb.match}
             </h3>
@@ -53,8 +67,8 @@ export function ArbitrageCard({ arb, capital }: Props) {
               <th className="px-3 py-2 text-left">Casa de apuestas</th>
               <th className="px-3 py-2 text-right">Cuota</th>
               <th className="px-3 py-2 text-right">% stake</th>
-              <th className="px-3 py-2 text-right">€ a apostar</th>
-              <th className="px-5 py-2 text-right">€ a cobrar</th>
+              <th className="px-3 py-2 text-right">A apostar</th>
+              <th className="px-5 py-2 text-right">A cobrar</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -76,10 +90,10 @@ export function ArbitrageCard({ arb, capital }: Props) {
                     {(leg.stake_pct * 100).toFixed(2)}%
                   </td>
                   <td className="px-3 py-2 text-right font-mono">
-                    € {stake.toFixed(2)}
+                    {formatMoney(stake, currency)}
                   </td>
                   <td className="px-5 py-2 text-right font-mono text-accent">
-                    € {payout.toFixed(2)}
+                    {formatMoney(payout, currency)}
                   </td>
                 </tr>
               );
@@ -91,10 +105,10 @@ export function ArbitrageCard({ arb, capital }: Props) {
       {/* Footer */}
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-bg px-5 py-3 text-sm">
         <div className="text-muted">
-          Invirtiendo <span className="font-mono text-white">€ {capital.toFixed(2)}</span>{" "}
+          Invirtiendo <span className="font-mono text-white">{formatMoney(capital, currency)}</span>{" "}
           cobras{" "}
-          <span className="font-mono text-accent">€ {guaranteed.toFixed(2)}</span> (beneficio
-          neto <span className="font-mono text-accent">€ {netProfit.toFixed(2)}</span>)
+          <span className="font-mono text-accent">{formatMoney(guaranteed, currency)}</span> (beneficio
+          neto <span className="font-mono text-accent">{formatMoney(netProfit, currency)}</span>)
         </div>
         <Link
           href={`/arbitrage/${arb.id}`}
@@ -105,4 +119,34 @@ export function ArbitrageCard({ arb, capital }: Props) {
       </footer>
     </article>
   );
+}
+
+const LEAGUE_LABELS: Record<string, string> = {
+  soccer_epl: "EPL",
+  soccer_spain_la_liga: "La Liga",
+  soccer_italy_serie_a: "Serie A",
+  soccer_italy_serie_b: "Serie B",
+  soccer_germany_bundesliga: "Bundesliga",
+  soccer_france_ligue_one: "Ligue 1",
+  soccer_uefa_champs_league: "UCL",
+  soccer_uefa_europa_league: "UEL",
+  soccer_usa_mls: "MLS",
+  soccer_england_championship: "Championship",
+  soccer_brazil_campeonato: "Brasileirão",
+  soccer_argentina_primera_division: "Arg Primera",
+  soccer_chile_campeonato: "Chile",
+  soccer_netherlands_eredivisie: "Eredivisie",
+  soccer_portugal_primeira_liga: "Primeira",
+  soccer_spain_segunda_division: "Segunda",
+  soccer_england_efl_womens: "EFL W",
+  soccer_usa_nwsl: "NWSL",
+  baseball_mlb: "MLB",
+  basketball_nba: "NBA",
+  basketball_wnba: "WNBA",
+  icehockey_nhl: "NHL",
+  americanfootball_nfl: "NFL",
+};
+
+function prettyLeague(league: string, sport: string): string {
+  return LEAGUE_LABELS[league] ?? sport.toUpperCase();
 }

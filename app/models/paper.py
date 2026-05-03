@@ -31,6 +31,9 @@ class PaperBet(Base):
     # Stake como fracción de bankroll (ej. 0.0020 = 0.2% Kelly/4). Unidades abstractas.
     stake_units: Mapped[Decimal] = mapped_column(Numeric(8, 5))
     ev_at_placement: Mapped[Decimal | None] = mapped_column(Numeric(8, 5))
+    # Cuota de cierre del mismo (outcome, bookmaker) — capturada por
+    # capture_closing_lines_job ~5min antes del kickoff. CLV = odds_taken/closing_odds - 1.
+    closing_odds: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
     placed_at: Mapped[datetime] = mapped_column(server_default=func.now())
     # 'pending' | 'won' | 'lost' | 'void'
     result: Mapped[str] = mapped_column(String(20), default="pending")

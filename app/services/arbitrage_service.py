@@ -17,6 +17,12 @@ from app.models.match import Match
 from app.models.sport import League, Season
 from app.services.paper_trading_service import PaperTradingService
 
+# Cuotas ≤ este umbral indican que el bookmaker tiene el mercado SUSPENDIDO
+# (placeholder ~1.00). Usar la "otra pata" del mismo libro produce arbs falsos
+# de 2 dígitos (ver caso Hawks/Knicks #80). Si CUALQUIER outcome del mercado
+# del libro está bajo este umbral, el libro entero queda fuera.
+SUSPENDED_ODDS_THRESHOLD = 1.05
+
 
 @dataclass
 class RevalidationResult:
@@ -231,6 +237,37 @@ class ArbitrageDetectionService:
 
         cutoff = now - timedelta(minutes=self.max_odds_age_minutes)
 
+        # Si cualquier libro del arb tiene CUALQUIER outcome del mercado en
+        # cuota suspendida (≤ SUSPENDED_ODDS_THRESHOLD), su mercado está
+        # congelado: el leg que parecía sano (ej. 25.0) no es ejecutable.
+        # Cuota 1.00 en el outcome opuesto es la firma del falso positivo.
+        bk_ids_in_arb = [b.id for b in bk_map.values()]
+        out_ids = [o.id for o in outcomes]
+        suspension_rows = (
+            await db.execute(
+                select(Odds.outcome_id, Odds.bookmaker_id, Odds.price)
+                .where(
+                    Odds.outcome_id.in_(out_ids),
+                    Odds.bookmaker_id.in_(bk_ids_in_arb),
+                    Odds.captured_at >= cutoff,
+                )
+                .order_by(Odds.captured_at.desc())
+            )
+        ).all()
+        seen_pairs: set[tuple[int, int]] = set()
+        for out_id, bk_id, price in suspension_rows:
+            pair = (out_id, bk_id)
+            if pair in seen_pairs:
+                continue  # solo la más reciente
+            seen_pairs.add(pair)
+            if float(price) <= SUSPENDED_ODDS_THRESHOLD:
+                return RevalidationResult(
+                    status="dead",
+                    detected_profit_pct=detected_pct,
+                    current_profit_pct=0.0,
+                    age_seconds=age_seconds,
+                )
+
         # Re-precea cada leg con su última cuota específica.
         repriced: list[dict] = []
         effective_implied_sum = 0.0
@@ -377,8 +414,14 @@ class ArbitrageDetectionService:
 
         odds_by_bookmaker: dict[str, list[float]] = {}
         for bk_key, odds_map in bookmaker_odds.items():
-            if all(o.id in odds_map for o in outcomes):
-                odds_by_bookmaker[bk_key] = [odds_map[o.id] for o in outcomes]
+            if not all(o.id in odds_map for o in outcomes):
+                continue
+            odds_list = [odds_map[o.id] for o in outcomes]
+            # Si cualquier outcome está suspendido, el mercado del libro está
+            # congelado: descartar el libro entero.
+            if any(p <= SUSPENDED_ODDS_THRESHOLD for p in odds_list):
+                continue
+            odds_by_bookmaker[bk_key] = odds_list
 
         return odds_by_bookmaker
 
@@ -446,3 +489,40 @@ class ArbitrageDetectionService:
             arb.closed_at = now
 
         return len(result)
+
+    async def sweep_dead_arbs(self, db: AsyncSession) -> int:
+        """
+        Revalida cada arb `active` con kickoff aún en el futuro y persiste
+        `status='dead'` cuando la revalidación así lo indica.
+
+        Cierra la brecha entre `_expire_arbs` (que solo vence por kickoff) y
+        `revalidate_arb` (read-only): opps que siguen pre-kickoff pero cuyas
+        cuotas ya no forman arb quedan como zombies en DB y se filtran por
+        `?status=active`. Este sweep las marca `dead` explícitamente.
+        """
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        rows = (
+            await db.execute(
+                select(ArbitrageOpportunity.id).where(
+                    ArbitrageOpportunity.status == "active",
+                    ArbitrageOpportunity.expires_at > now,
+                )
+            )
+        ).scalars().all()
+
+        killed = 0
+        for arb_id in rows:
+            try:
+                result = await self.revalidate_arb(db, arb_id)
+            except ValueError:
+                continue
+            if result.status == "dead":
+                arb = await db.get(ArbitrageOpportunity, arb_id)
+                if arb is not None and arb.status == "active":
+                    arb.status = "dead"
+                    arb.closed_at = now
+                    killed += 1
+
+        if killed:
+            await db.commit()
+        return killed

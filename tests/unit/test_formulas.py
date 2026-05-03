@@ -3,11 +3,13 @@ import pytest
 from app.core.formulas import (
     calculate_roi,
     consensus_probability,
+    consensus_probability_with_std,
     flat_stake,
     fractional_kelly,
     implied_probability,
     kelly_criterion,
     kelly_criterion_net,
+    kelly_criterion_uncertainty_adjusted,
     odds_to_fair_probs,
     remove_vig_proportional,
     remove_vig_shin,
@@ -231,3 +233,77 @@ class TestKellyCriterionNet:
 
     def test_odds_below_one_returns_zero(self):
         assert kelly_criterion_net(0.5, 0.9, 0.01) == 0.0
+
+
+class TestConsensusProbabilityWithStd:
+    def test_single_book_has_zero_std(self):
+        """Con un solo libro no hay disenso → SE = 0."""
+        means, stds = consensus_probability_with_std({"bk1": [2.10, 3.30, 3.60]})
+        assert all(s == 0.0 for s in stds)
+
+    def test_identical_books_have_zero_std(self):
+        """Libros que coinciden exactamente → SE = 0."""
+        odds = {f"bk{i}": [2.10, 3.30, 3.60] for i in range(5)}
+        _, stds = consensus_probability_with_std(odds)
+        assert all(s == pytest.approx(0.0, abs=1e-12) for s in stds)
+
+    def test_disagreement_increases_std(self):
+        """Mayor dispersión entre libros → mayor SE."""
+        tight = {f"bk{i}": [2.10, 3.30, 3.60] for i in range(5)}
+        spread = {
+            "bk1": [1.90, 3.30, 4.20],
+            "bk2": [2.10, 3.30, 3.60],
+            "bk3": [2.30, 3.30, 3.10],
+            "bk4": [2.20, 3.30, 3.30],
+            "bk5": [2.00, 3.30, 3.90],
+        }
+        _, stds_tight = consensus_probability_with_std(tight)
+        _, stds_spread = consensus_probability_with_std(spread)
+        # Outcomes 0 (home) y 2 (away) varían entre libros en `spread`
+        assert stds_spread[0] > stds_tight[0]
+        assert stds_spread[2] > stds_tight[2]
+
+    def test_more_books_reduce_std(self):
+        """Misma dispersión pero más libros → SE más chico (1/sqrt(N))."""
+        # Replicar el mismo patrón con 5 vs 20 libros
+        pattern = [(2.05, 3.30, 3.65), (2.15, 3.30, 3.55)]
+        small = {
+            f"bk{i}": list(pattern[i % 2]) for i in range(5)
+        }
+        large = {
+            f"bk{i}": list(pattern[i % 2]) for i in range(20)
+        }
+        _, stds_small = consensus_probability_with_std(small)
+        _, stds_large = consensus_probability_with_std(large)
+        assert stds_large[0] < stds_small[0]
+
+
+class TestKellyCriterionUncertaintyAdjusted:
+    def test_zero_std_matches_kelly_net(self):
+        """Sin incertidumbre, debe igualar al Kelly net estándar."""
+        adj = kelly_criterion_uncertainty_adjusted(0.55, 2.10, 0.0, 0.0)
+        assert adj == pytest.approx(kelly_criterion_net(0.55, 2.10, 0.0))
+
+    def test_positive_std_reduces_kelly(self):
+        """Std > 0 con edge > σ → shrinkage menor que 1, Kelly se reduce."""
+        base = kelly_criterion_net(0.55, 2.10, 0.0)
+        adj = kelly_criterion_uncertainty_adjusted(0.55, 2.10, 0.01, 0.0)
+        assert 0 < adj < base
+
+    def test_high_std_zeros_kelly(self):
+        """σ > edge → shrinkage clampeado a 0 (no apostar)."""
+        # edge = 0.55*2.10 - 1 = 0.155, σ_edge = 2.10*0.10 = 0.21 > edge
+        adj = kelly_criterion_uncertainty_adjusted(0.55, 2.10, 0.10, 0.0)
+        assert adj == 0.0
+
+    def test_zero_kelly_stays_zero(self):
+        """Si no hay edge, ningún ajuste; queda en 0."""
+        adj = kelly_criterion_uncertainty_adjusted(0.40, 2.10, 0.01, 0.0)
+        assert adj == 0.0
+
+    def test_commission_compounds_with_uncertainty(self):
+        """Comisión y σ ambos reducen el Kelly final."""
+        no_comm = kelly_criterion_uncertainty_adjusted(0.55, 2.10, 0.005, 0.0)
+        with_comm = kelly_criterion_uncertainty_adjusted(0.55, 2.10, 0.005, 0.01)
+        assert 0 < with_comm < no_comm
+

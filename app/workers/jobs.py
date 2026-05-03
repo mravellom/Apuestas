@@ -268,11 +268,12 @@ async def capture_closing_lines_job():
     """Job: congela la última cuota disponible como closing line para partidos próximos a empezar."""
     from datetime import datetime, timedelta, timezone
 
-    from sqlalchemy import select
+    from sqlalchemy import select, update
     from sqlalchemy.dialects.postgresql import insert
 
     from app.models.market import ClosingLine, Market, Odds, Outcome
     from app.models.match import Match
+    from app.models.paper import PaperBet
 
     try:
         async with async_session() as db:
@@ -290,6 +291,7 @@ async def capture_closing_lines_job():
             ).scalars().all()
 
             captured = 0
+            clv_filled = 0
             for match in matches:
                 outcomes = (
                     await db.execute(
@@ -329,10 +331,24 @@ async def capture_closing_lines_job():
                         await db.execute(stmt)
                         captured += 1
 
+                        # Backfill CLV en PaperBets del mismo (outcome, bookmaker).
+                        # Solo rellenamos closing_odds NULL — si ya existe lo respetamos
+                        # (re-runs del job no deben sobrescribir un cierre anterior).
+                        result = await db.execute(
+                            update(PaperBet)
+                            .where(
+                                PaperBet.outcome_id == outcome.id,
+                                PaperBet.bookmaker_id == bm_id,
+                                PaperBet.closing_odds.is_(None),
+                            )
+                            .values(closing_odds=price)
+                        )
+                        clv_filled += result.rowcount or 0
+
             await db.commit()
             logger.info(
-                "Closing lines captured: %d rows across %d matches",
-                captured, len(matches),
+                "Closing lines captured: %d rows across %d matches; CLV backfilled on %d paper bets",
+                captured, len(matches), clv_filled,
             )
     except Exception as e:
         logger.error(f"Capture closing lines job failed: {e}")

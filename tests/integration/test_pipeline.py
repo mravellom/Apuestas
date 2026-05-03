@@ -228,6 +228,50 @@ class TestOpportunityDetection:
         # Same number of opportunities (updated, not duplicated)
         assert len(count1) == len(count2)
 
+    async def test_batch_portfolio_caps_total_paper_exposure(
+        self, db_session: AsyncSession
+    ):
+        """Múltiples matches con señales fuertes → PaperBets respetan el cap 20%."""
+        from app.models.paper import PaperBet
+        from app.services.paper_trading_service import (
+            PAPER_MAX_TOTAL_EXPOSURE_UNITS,
+        )
+
+        await seed_database(db_session)
+        commence = datetime.now(timezone.utc) + timedelta(days=1)
+        # 6 matches diferentes, cada uno con señal fuerte (consenso a 3.50, soft a 4.20).
+        teams = [(f"H{i}", f"A{i}") for i in range(6)]
+        fake_data = []
+        for h, a in teams:
+            for bk in ("bet365", "pinnacle", "betfair_ex_eu", "marathonbet", "unibet_eu"):
+                fake_data.append(
+                    make_raw_odds(h, a, bk, [(h, 2.10), ("Draw", 3.30), (a, 3.50)], commence)
+                )
+            # Soft outlier con cuota notable en away
+            fake_data.append(
+                make_raw_odds(h, a, "williamhill", [(h, 2.10), ("Draw", 3.30), (a, 4.20)], commence)
+            )
+        await OddsIngestionService(FakeAdapter(fake_data)).ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_spain_la_liga"]
+        )
+
+        detector = OpportunityDetectionService(min_value=0.01, min_bookmakers=5)
+        counts, _ = await detector.detect_all(db_session)
+        assert counts["opportunities_found"] >= 6  # al menos 1 por match
+
+        paper = (
+            await db_session.execute(
+                select(PaperBet).where(PaperBet.source_type == "value")
+            )
+        ).scalars().all()
+        assert len(paper) > 0
+        total_stake = sum(float(p.stake_units) for p in paper)
+        assert total_stake <= float(PAPER_MAX_TOTAL_EXPOSURE_UNITS) + 1e-6
+
+        # Ningún match debe tener más de un PaperBet (correlación: best leg only).
+        match_ids = [p.match_id for p in paper]
+        assert len(match_ids) == len(set(match_ids))
+
     async def test_expire_opportunities(self, db_session: AsyncSession):
         """Opportunities for past matches should be expired."""
         await seed_database(db_session)

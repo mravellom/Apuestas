@@ -4,12 +4,11 @@ import statistics
 from dataclasses import dataclass
 
 from app.core.formulas import (
-    consensus_probability,
+    consensus_probability_with_std,
     implied_probability,
-    kelly_criterion,
     kelly_criterion_net,
+    kelly_criterion_uncertainty_adjusted,
     odds_to_fair_probs,
-    value_calculation,
     value_calculation_net,
 )
 
@@ -49,6 +48,7 @@ def detect_value_bets(
     sharp_bookmakers: set[str] | None = None,
     min_value: float = 0.05,
     min_bookmakers: int = 5,
+    commission_by_bookmaker: dict[str, float] | None = None,
 ) -> list[ValueBet]:
     """
     Detecta value bets en un mercado con filtros anti-basura.
@@ -57,7 +57,7 @@ def detect_value_bets(
     - min_bookmakers: consenso mínimo robusto (default 5)
     - odds range: descarta favoritos extremos (<1.30) y longshots (>10.0)
     - dispersión: descarta outcomes con coef. variación > 15%
-    - min_value: EV mínimo 5%
+    - min_value: EV neto mínimo 5% (post-comisión si aplica)
 
     Args:
         odds_by_bookmaker: {bookmaker_key: [odds per outcome]}
@@ -65,6 +65,10 @@ def detect_value_bets(
         sharp_bookmakers: bookmakers con mayor peso en consenso
         min_value: porcentaje mínimo de value para considerar (default 5%)
         min_bookmakers: mínimo de bookmakers para consenso confiable
+        commission_by_bookmaker: comisión efectiva por book (0-1). Cuando un libro
+            cobra comisión sobre profit (ej. SportMarket/Stake 1%), su EV real es
+            menor que el bruto. Sin esto pasarían señales que son edge negativo
+            post-comisión.
 
     Returns:
         Lista de ValueBet ordenada por value_pct descendente
@@ -72,8 +76,11 @@ def detect_value_bets(
     if len(odds_by_bookmaker) < min_bookmakers:
         return []
 
-    fair_probs = consensus_probability(odds_by_bookmaker, sharp_bookmakers)
+    fair_probs, prob_stds = consensus_probability_with_std(
+        odds_by_bookmaker, sharp_bookmakers
+    )
     num_bookmakers = len(odds_by_bookmaker)
+    commission_by_bookmaker = commission_by_bookmaker or {}
 
     if num_bookmakers >= 6:
         confidence = "high"
@@ -88,6 +95,8 @@ def detect_value_bets(
         if len(odds_list) != len(outcome_keys):
             continue
 
+        commission = commission_by_bookmaker.get(bookmaker_key, 0.0)
+
         for i, odds in enumerate(odds_list):
             if odds < MIN_ODDS or odds > MAX_ODDS:
                 continue
@@ -97,10 +106,19 @@ def detect_value_bets(
 
             consensus_prob = fair_probs[i]
             impl_prob = implied_probability(odds)
-            value = value_calculation(consensus_prob, odds)
+            value = value_calculation_net(consensus_prob, odds, commission)
 
             if value >= min_value:
-                kelly = kelly_criterion(consensus_prob, odds)
+                # Kelly por incertidumbre: si los libros disienten mucho sobre
+                # este outcome (SE alto), el Kelly se shrinkea o llega a 0.
+                kelly = kelly_criterion_uncertainty_adjusted(
+                    consensus_prob, odds, prob_stds[i], commission
+                )
+                if kelly <= 0:
+                    # σ ≥ edge: el edge aparente es indistinguible de ruido del
+                    # consenso. No registramos esta señal — es la decisión correcta
+                    # bajo incertidumbre.
+                    continue
                 value_bets.append(
                     ValueBet(
                         outcome_index=i,

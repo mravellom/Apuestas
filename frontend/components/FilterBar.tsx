@@ -53,12 +53,12 @@ export function FilterBar({
 
       <div className="flex flex-col gap-1">
         <label className="text-xs uppercase tracking-wide text-muted">
-          Capital por arbitraje (€)
+          Capital por arbitraje
         </label>
         <input
           type="number"
           min="1"
-          step="10"
+          step="any"
           value={capital}
           onChange={(e) =>
             onChange({

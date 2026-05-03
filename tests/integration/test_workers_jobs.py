@@ -16,9 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.adapters.base import DataSourceAdapter, RawOddsData, RawOutcome
 from app.models.alert import AlertConfig
 from app.models.arbitrage import ArbitrageOpportunity
+from app.models.bookmaker import Bookmaker
 from app.models.market import ClosingLine, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import Opportunity
+from app.models.paper import PaperBet
 from app.models.user import User, UserConfig
 from app.services.auth_service import hash_password
 from app.services.odds_service import OddsIngestionService
@@ -388,6 +390,95 @@ class TestCaptureClosingLinesJob:
         count2 = len((await db_session.execute(select(ClosingLine))).scalars().all())
 
         assert count1 == count2 == 3
+
+    async def test_backfills_closing_odds_on_paper_bets(
+        self, patch_async_session, db_session
+    ):
+        """El job debe rellenar PaperBet.closing_odds para el (outcome, bookmaker) apostado."""
+        await seed_database(db_session)
+        commence = datetime.now(timezone.utc) + timedelta(minutes=2)
+        data = [
+            _raw("BH", "BA", "bet365",
+                 [("BH", 2.10), ("Draw", 3.30), ("BA", 3.60)], commence),
+            _raw("BH", "BA", "pinnacle",
+                 [("BH", 2.05), ("Draw", 3.40), ("BA", 3.70)], commence),
+        ]
+        await OddsIngestionService(FakeAdapter(data)).ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_spain_la_liga"]
+        )
+
+        match = (await db_session.execute(select(Match))).scalar_one()
+        # Apuesta sobre el outcome BH en bet365
+        bh_outcome = (
+            await db_session.execute(
+                select(Outcome).where(Outcome.key == "bh")
+            )
+        ).scalar_one()
+        bet365 = (
+            await db_session.execute(
+                select(Bookmaker).where(Bookmaker.key == "bet365")
+            )
+        ).scalar_one()
+        paper = PaperBet(
+            source_type="value",
+            match_id=match.id,
+            outcome_id=bh_outcome.id,
+            bookmaker_id=bet365.id,
+            odds_taken=Decimal("2.20"),  # tomamos cuota mejor que la final
+            stake_units=Decimal("0.005"),
+            ev_at_placement=Decimal("0.04"),
+        )
+        db_session.add(paper)
+        await db_session.commit()
+
+        await jobs_module.capture_closing_lines_job()
+
+        await db_session.refresh(paper)
+        # closing line de bet365 para BH = 2.10
+        assert paper.closing_odds == Decimal("2.1000")
+
+    async def test_backfill_does_not_overwrite_existing(
+        self, patch_async_session, db_session
+    ):
+        """Un closing_odds ya rellenado no debe ser pisado por reruns posteriores."""
+        await seed_database(db_session)
+        commence = datetime.now(timezone.utc) + timedelta(minutes=2)
+        data = [
+            _raw("OH", "OA", "bet365",
+                 [("OH", 2.50), ("Draw", 3.10), ("OA", 2.80)], commence),
+        ]
+        await OddsIngestionService(FakeAdapter(data)).ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_spain_la_liga"]
+        )
+
+        match = (await db_session.execute(select(Match))).scalar_one()
+        oh_outcome = (
+            await db_session.execute(
+                select(Outcome).where(Outcome.key == "oh")
+            )
+        ).scalar_one()
+        bet365 = (
+            await db_session.execute(
+                select(Bookmaker).where(Bookmaker.key == "bet365")
+            )
+        ).scalar_one()
+        # Pre-existing closing capturado en una corrida anterior con cuota distinta
+        paper = PaperBet(
+            source_type="value",
+            match_id=match.id,
+            outcome_id=oh_outcome.id,
+            bookmaker_id=bet365.id,
+            odds_taken=Decimal("2.60"),
+            stake_units=Decimal("0.003"),
+            closing_odds=Decimal("2.4000"),
+        )
+        db_session.add(paper)
+        await db_session.commit()
+
+        await jobs_module.capture_closing_lines_job()
+
+        await db_session.refresh(paper)
+        assert paper.closing_odds == Decimal("2.4000")
 
 
 class TestCleanupJob:

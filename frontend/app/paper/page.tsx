@@ -4,9 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Header } from "@/components/Header";
-import { getPaperStats, listPaperBets } from "@/lib/api";
+import { getPaperCLV, getPaperStats, listPaperBets } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
-import type { PaperBet, PaperStats } from "@/lib/types";
+import type { PaperBet, PaperCLV, PaperStats } from "@/lib/types";
 
 type ResultFilter = "all" | "pending" | "won" | "lost";
 
@@ -14,6 +14,7 @@ export default function PaperTradingPage() {
   const router = useRouter();
   const [stats, setStats] = useState<PaperStats | null>(null);
   const [bets, setBets] = useState<PaperBet[]>([]);
+  const [clv, setClv] = useState<PaperCLV | null>(null);
   const [filter, setFilter] = useState<ResultFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,12 +23,19 @@ export default function PaperTradingPage() {
     setLoading(true);
     setError(null);
     try {
-      const [s, b] = await Promise.all([
-        getPaperStats(),
-        listPaperBets({ result: filter === "all" ? undefined : filter, limit: 200 }),
+      const [s, b, c] = await Promise.all([
+        getPaperStats("arbitrage"),
+        listPaperBets({
+          result: filter === "all" ? undefined : filter,
+          sourceType: "arbitrage",
+          limit: 200,
+        }),
+        // CLV se mide sobre value bets — es la métrica de skill del detector.
+        getPaperCLV({ sourceType: "value" }),
       ]);
       setStats(s);
       setBets(b);
+      setClv(c);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error cargando paper trading");
     } finally {
@@ -55,11 +63,11 @@ export default function PaperTradingPage() {
       <Header />
       <main className="mx-auto max-w-6xl px-6 py-8">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-white">Paper trading</h1>
+          <h1 className="text-2xl font-bold text-white">Paper trading · Arbitraje</h1>
           <p className="mt-1 text-sm text-muted">
-            Apuestas simuladas registradas automáticamente por el engine. Validan si el
-            edge es real antes de arriesgar dinero. Stakes y profits en unidades de
-            bankroll (0.01 = 1%).
+            Apuestas simuladas de arbitraje registradas automáticamente por el engine.
+            Validan si el edge es real antes de arriesgar dinero. Stakes y profits en
+            unidades de bankroll (0.01 = 1%).
           </p>
         </div>
 
@@ -93,6 +101,8 @@ export default function PaperTradingPage() {
             <PillCard label="Void" value={stats.void} />
           </div>
         ) : null}
+
+        {clv ? <CLVPanel clv={clv} /> : null}
 
         <div className="mb-4 flex items-center gap-2">
           {(["all", "pending", "won", "lost"] as ResultFilter[]).map((f) => (
@@ -135,7 +145,6 @@ export default function PaperTradingPage() {
               <thead className="border-b border-border text-xs uppercase tracking-wide text-muted">
                 <tr>
                   <th className="px-3 py-2 text-left">Placed</th>
-                  <th className="px-3 py-2 text-left">Type</th>
                   <th className="px-3 py-2 text-left">Match</th>
                   <th className="px-3 py-2 text-left">Pick</th>
                   <th className="px-3 py-2 text-left">Book</th>
@@ -150,7 +159,6 @@ export default function PaperTradingPage() {
                 {bets.map((b) => (
                   <tr key={b.id} className="border-b border-border/50 hover:bg-surface/60">
                     <td className="px-3 py-2 text-muted">{b.placed_at}</td>
-                    <td className="px-3 py-2">{b.source_type}</td>
                     <td className="px-3 py-2 text-white">{b.match}</td>
                     <td className="px-3 py-2">{b.outcome}</td>
                     <td className="px-3 py-2 font-mono">{b.bookmaker}</td>
@@ -213,6 +221,57 @@ function PillCard({ label, value }: { label: string; value: number }) {
     <div className="rounded border border-border bg-surface p-3 text-center">
       <div className="text-xs uppercase text-muted">{label}</div>
       <div className="mt-1 font-mono text-lg text-white">{value}</div>
+    </div>
+  );
+}
+
+function CLVPanel({ clv }: { clv: PaperCLV }) {
+  const avg = clv.avg_clv_pct;
+  const median = clv.median_clv_pct;
+  const hasData = clv.bets_with_clv > 0 && avg !== null;
+
+  const fmtPct = (v: number | null) =>
+    v === null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+
+  return (
+    <div className="mb-6 rounded-lg border border-border bg-surface p-4">
+      <div className="mb-3 flex items-baseline justify-between">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
+            Closing Line Value (value bets)
+          </h2>
+          <p className="text-xs text-muted/70">
+            Cuánto batiste a la línea de cierre. CLV positivo sostenido = edge real.
+          </p>
+        </div>
+        <span className="text-xs text-muted">
+          {clv.bets_with_clv}/{clv.total_bets} bets ({clv.coverage_pct.toFixed(1)}% coverage)
+        </span>
+      </div>
+      {hasData ? (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+          <StatCard
+            label="Avg CLV"
+            value={fmtPct(avg)}
+            highlight={(avg ?? 0) > 0}
+            negative={(avg ?? 0) < 0}
+          />
+          <StatCard
+            label="Median CLV"
+            value={fmtPct(median)}
+            highlight={(median ?? 0) > 0}
+            negative={(median ?? 0) < 0}
+          />
+          <PillCard label="Positive" value={clv.positive_count} />
+          <PillCard label="Negative" value={clv.negative_count} />
+          <PillCard label="Zero" value={clv.zero_count} />
+        </div>
+      ) : (
+        <p className="text-sm text-muted">
+          Aún no hay closing lines capturadas para tus paper value bets.
+          Se rellenan automáticamente ~5 min antes del kickoff.
+        </p>
+      )}
     </div>
   );
 }

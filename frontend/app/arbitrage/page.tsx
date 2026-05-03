@@ -72,7 +72,7 @@ export default function ArbitrageListPage() {
           <h1 className="text-2xl font-bold text-white">Oportunidades de arbitraje</h1>
           <p className="mt-1 text-sm text-muted">
             Combinaciones con ganancia matemática garantizada. Cada tarjeta muestra en
-            qué casa apostar y cuánto € por outcome según el capital configurado.
+            qué casa apostar y cuánto apostar en cada outcome según el capital configurado.
           </p>
         </div>
 
@@ -86,8 +86,8 @@ export default function ArbitrageListPage() {
             />
             <StatCard label="Profit medio" value={`+${stats.avg.toFixed(2)}%`} />
             <StatCard
-              label={`Beneficio con €${capital}/arb`}
-              value={`€ ${stats.totalNet.toFixed(2)}`}
+              label={`Beneficio con ${capital}/arb`}
+              value={stats.totalNet.toFixed(2)}
               highlight
             />
           </div>

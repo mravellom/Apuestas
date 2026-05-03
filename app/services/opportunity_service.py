@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.steam import detect_steam_signal
 from app.core.value_detector import (
     ValueBet,
     detect_value_bets,
@@ -18,7 +19,7 @@ from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
 from app.models.opportunity import Opportunity
 from app.models.sport import League, Season
-from app.services.paper_trading_service import PaperTradingService
+from app.services.paper_trading_service import PaperTradingService, PendingValueBet
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class OpportunityDetectionService:
         """
         counts = {"markets_scanned": 0, "opportunities_found": 0, "errors": 0}
         new_opportunities: list[Opportunity] = []
+        pending_paper: list[PendingValueBet] = []
 
         # Commission map se carga una vez por corrida (cambia rara vez).
         commission_map = await self._load_commission_map(db)
@@ -71,12 +73,20 @@ class OpportunityDetectionService:
 
         for match in matches.scalars().all():
             try:
-                found_opps = await self._detect_for_match(db, match, commission_map)
+                found_opps = await self._detect_for_match(
+                    db, match, commission_map, pending_paper
+                )
                 counts["opportunities_found"] += len(found_opps)
                 new_opportunities.extend(found_opps)
             except Exception as e:
                 logger.error(f"Error detecting for match {match.id}: {e}")
                 counts["errors"] += 1
+
+        # Portfolio sizing del batch completo: agrupa por match, aplica Kelly
+        # fraccionado, cap por bet, y cap de exposición total considerando
+        # PaperBets pendientes anteriores.
+        if pending_paper:
+            await self.paper.record_batch_value_bets(db, pending_paper)
 
         # Expire old opportunities
         expired = await self._expire_opportunities(db, now)
@@ -86,7 +96,11 @@ class OpportunityDetectionService:
         return counts, new_opportunities
 
     async def _detect_for_match(
-        self, db: AsyncSession, match: Match, commission_map: dict[str, float]
+        self,
+        db: AsyncSession,
+        match: Match,
+        commission_map: dict[str, float],
+        pending_paper: list[PendingValueBet],
     ) -> list[Opportunity]:
         """Detecta value bets para todos los mercados de un partido."""
         new_opps: list[Opportunity] = []
@@ -102,6 +116,9 @@ class OpportunityDetectionService:
                 opp = await self._save_opportunity(db, vb, market, match)
                 if opp:
                     new_opps.append(opp)
+                    pending_paper.append(
+                        PendingValueBet(opportunity=opp, vb=vb, match_id=match.id)
+                    )
 
         return new_opps
 
@@ -152,6 +169,7 @@ class OpportunityDetectionService:
             sharp_bookmakers=sharp_keys,
             min_value=self.min_value,
             min_bookmakers=self.min_bookmakers,
+            commission_by_bookmaker=commission_map,
         )
 
     async def _load_commission_map(self, db: AsyncSession) -> dict[str, float]:
@@ -267,7 +285,11 @@ class OpportunityDetectionService:
             opp.kelly_stake_pct = Decimal(str(vb.kelly_full))
             return None
         else:
-            # Create new
+            # Steam check: ¿los libros sharp se movieron rápido en este outcome?
+            # Si sí, esta "value" puede ser una cuota soft a punto de corregirse.
+            steam = await detect_steam_signal(db, outcome.id)
+            # Create new. PaperBet se crea después en batch (record_batch_value_bets)
+            # con sizing portfolio considerando todas las señales del ciclo.
             opp = Opportunity(
                 outcome_id=outcome.id,
                 bookmaker_id=bookmaker.id,
@@ -276,11 +298,11 @@ class OpportunityDetectionService:
                 implied_prob=Decimal(str(vb.implied_prob)),
                 value_pct=Decimal(str(vb.value_pct)),
                 kelly_stake_pct=Decimal(str(vb.kelly_full)),
+                is_steam=steam.is_steam,
                 expires_at=match.commence_time,
             )
             db.add(opp)
             await db.flush()
-            await self.paper.record_value_bet(db, opp, vb, match.id)
             return opp
 
     async def _expire_opportunities(self, db: AsyncSession, now: datetime) -> int:

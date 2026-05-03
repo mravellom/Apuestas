@@ -1,6 +1,10 @@
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
+
+
+UserRole = Literal["free", "premium", "admin"]
 
 
 class RegisterRequest(BaseModel):
@@ -21,14 +25,14 @@ class RefreshRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
-    token_type: str = "bearer"
+    token_type: Literal["bearer"] = "bearer"
 
 
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: str
     username: str
-    role: str
+    role: UserRole
     is_active: bool
 
     model_config = {"from_attributes": True}

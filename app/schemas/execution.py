@@ -1,8 +1,14 @@
 """Schemas para ejecución de apuestas reales."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+# Mantener sincronizado con los strings del execution_service.
+BetStatus = Literal["pending", "placed", "confirmed", "rejected", "void", "settled"]
+BetResult = Literal["won", "lost", "void", "half_won", "half_lost"]
 
 
 class ExecuteArbitrageRequest(BaseModel):
@@ -43,8 +49,7 @@ class RejectBetRequest(BaseModel):
 
 
 class SettleBetRequest(BaseModel):
-    # won | lost | void | half_won | half_lost
-    result: str
+    result: BetResult
     actual_payout: float = Field(ge=0)
 
 
@@ -62,7 +67,7 @@ class LegSummaryResponse(BaseModel):
     bookmaker_key: str
     bookmaker_name: str
     stake_amount: float
-    status: str
+    status: BetStatus
     odds_effective: float | None
     commission_pct: float
 
@@ -105,8 +110,8 @@ class BetResponse(BaseModel):
     odds_at_detection: float | None
     odds_at_placement: float | None
     commission_pct: float
-    status: str
-    result: str | None
+    status: BetStatus
+    result: BetResult | None
     actual_payout: float | None
     profit_loss: float | None
     created_at: datetime

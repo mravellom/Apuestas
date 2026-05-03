@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Numeric, String, Uuid
+from sqlalchemy import Boolean, ForeignKey, Index, Numeric, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -25,6 +25,10 @@ class Opportunity(Base):
     value_pct: Mapped[Decimal] = mapped_column(Numeric(8, 5))
     kelly_stake_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 5))
     status: Mapped[str] = mapped_column(String(20), default="active")
+    # Detectada durante un steam move (libros sharp moviéndose rápido en este
+    # outcome). Cuando is_steam=True, el "value" puede ser una cuota soft stale a
+    # punto de corregirse — apostar requiere ejecución muy rápida o queda fuera.
+    is_steam: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     detected_at: Mapped[datetime] = mapped_column(server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column()
     closed_at: Mapped[datetime | None] = mapped_column()

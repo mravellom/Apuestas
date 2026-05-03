@@ -1,14 +1,19 @@
 from decimal import Decimal
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DB, CurrentUser
 from app.core.staking.factory import get_strategy
+from app.database import get_db
 from app.models.bookmaker import Bookmaker
 from app.models.market import Market, MarketType, Outcome
 from app.models.match import Match
 from app.models.opportunity import BetTracking, Opportunity
+from app.models.sport import League, Season, Sport
 from app.models.team import Team
 from app.models.user import Bankroll, UserConfig
 from app.schemas.opportunity import (
@@ -17,6 +22,26 @@ from app.schemas.opportunity import (
     TakeOpportunityRequest,
     TakeOpportunityResponse,
 )
+
+
+OpportunityStatus = Literal["active", "expired"]
+
+
+class OpportunityHistoryItem(BaseModel):
+    id: int
+    match: str
+    sport: str
+    league: str
+    commence_time: str
+    market_type: str
+    outcome_name: str
+    bookmaker: str
+    odds_price: float
+    value_pct: float
+    kelly_stake_pct: float | None
+    status: OpportunityStatus
+    detected_at: str
+    closed_at: str | None
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
@@ -44,6 +69,7 @@ async def _build_opportunity_response(opp: Opportunity, db) -> OpportunityRespon
         implied_prob=float(opp.implied_prob),
         value_pct=float(opp.value_pct),
         kelly_stake_pct=float(opp.kelly_stake_pct) if opp.kelly_stake_pct else None,
+        is_steam=bool(opp.is_steam),
         status=opp.status,
         detected_at=opp.detected_at,
     )
@@ -76,6 +102,62 @@ async def list_opportunities(
     opportunities = result.scalars().all()
 
     return [await _build_opportunity_response(opp, db) for opp in opportunities]
+
+
+@router.get("/history", response_model=list[OpportunityHistoryItem])
+async def opportunities_history(
+    status: str | None = None,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Historial completo de value bets (todos los estados por defecto).
+    Sin auth, mismo patrón que /arbitrage/history. Incluye sport/league
+    para colorear en la UI.
+    """
+    limit = max(1, min(limit, 500))
+
+    query = (
+        select(Opportunity)
+        .order_by(Opportunity.detected_at.desc())
+        .limit(limit)
+    )
+    if status:
+        query = query.where(Opportunity.status == status)
+
+    result = (await db.execute(query)).scalars().all()
+
+    response = []
+    for opp in result:
+        outcome = await db.get(Outcome, opp.outcome_id)
+        market = await db.get(Market, outcome.market_id)
+        market_type = await db.get(MarketType, market.market_type_id)
+        match = await db.get(Match, market.match_id)
+        home = await db.get(Team, match.home_team_id)
+        away = await db.get(Team, match.away_team_id)
+        bookmaker = await db.get(Bookmaker, opp.bookmaker_id)
+        season = await db.get(Season, match.season_id)
+        league = await db.get(League, season.league_id)
+        sport = await db.get(Sport, league.sport_id)
+
+        response.append(OpportunityHistoryItem(
+            id=opp.id,
+            match=f"{home.canonical_name} vs {away.canonical_name}",
+            sport=sport.key,
+            league=league.key,
+            commence_time=match.commence_time.strftime("%Y-%m-%d %H:%M UTC"),
+            market_type=market_type.key,
+            outcome_name=outcome.name,
+            bookmaker=bookmaker.key,
+            odds_price=float(opp.odds_price),
+            value_pct=float(opp.value_pct),
+            kelly_stake_pct=float(opp.kelly_stake_pct) if opp.kelly_stake_pct else None,
+            status=opp.status,
+            detected_at=opp.detected_at.strftime("%Y-%m-%d %H:%M UTC"),
+            closed_at=opp.closed_at.strftime("%Y-%m-%d %H:%M UTC") if opp.closed_at else None,
+        ))
+
+    return response
 
 
 @router.get("/{opportunity_id}", response_model=OpportunityDetailResponse)
