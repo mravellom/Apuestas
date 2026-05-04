@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     VALUE_DETECTION_ENABLED: bool = True
     # Scheduler intervals (seconds). Defaults are quota-safe for The Odds API free tier.
     # Drop to 30-60s only with paid plans — polling costs one request per league per interval.
-    SCHEDULER_FETCH_ODDS_SECONDS: int = 15 * 60
+    # Para fetch_odds este valor es el TICK del scheduler; la cadencia efectiva
+    # se modula adentro del job según proximidad del próximo partido.
+    SCHEDULER_FETCH_ODDS_SECONDS: int = 5 * 60
     SCHEDULER_DETECT_SECONDS: int = 15 * 60
     SCHEDULER_SCORES_SECONDS: int = 30 * 60
     # Franja horaria UTC en la que fetch_odds se salta la llamada externa para
@@ -47,6 +49,15 @@ class Settings(BaseSettings):
     # fútbol europeo ni MLB activo y la data histórica muestra cero arbs.
     FETCH_ODDS_QUIET_START_UTC: int = 4
     FETCH_ODDS_QUIET_END_UTC: int = 12
+    # Smart polling: cadencia dinámica de fetch_odds según horas hasta el
+    # próximo partido con detección activa. Histórico 14d muestra que el 70%
+    # de arbs jugosos (avg ≥3% profit) aparecen en la ventana 1-3h pre-kickoff,
+    # así que fetcheamos más densamente ahí y back-off cuando no hay partidos.
+    FETCH_ODDS_NEAR_KICKOFF_HOURS: int = 3
+    FETCH_ODDS_MID_KICKOFF_HOURS: int = 12
+    FETCH_ODDS_INTERVAL_NEAR_SECONDS: int = 5 * 60
+    FETCH_ODDS_INTERVAL_MID_SECONDS: int = 15 * 60
+    FETCH_ODDS_INTERVAL_FAR_SECONDS: int = 30 * 60
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = ""

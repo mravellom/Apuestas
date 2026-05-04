@@ -1,6 +1,7 @@
 """Jobs periódicos para el scheduler."""
 
 import logging
+from datetime import datetime, timezone
 
 from app.adapters.normalizer import TeamNormalizer
 from app.adapters.odds_api import OddsAPIAdapter
@@ -11,6 +12,10 @@ from app.services.odds_service import OddsIngestionService
 from app.services.opportunity_service import OpportunityDetectionService
 
 logger = logging.getLogger(__name__)
+
+# Timestamp del último fetch_odds que efectivamente llamó al adapter.
+# Vive en memoria del proceso — el primer tick post-restart siempre fetchea.
+_last_fetch_at: datetime | None = None
 
 
 # Regiones y mercados por deporte — hardcoded porque no cambian por liga.
@@ -52,6 +57,51 @@ def _in_quiet_window(hour_utc: int, start: int, end: int) -> bool:
     return hour_utc >= start or hour_utc < end
 
 
+def _required_interval_seconds(proximity_hours: float | None) -> int:
+    """Cadencia objetivo según horas hasta el próximo partido activo.
+
+    None = sin partidos próximos en el horizonte → cadencia FAR.
+    """
+    if proximity_hours is None:
+        return settings.FETCH_ODDS_INTERVAL_FAR_SECONDS
+    if proximity_hours <= settings.FETCH_ODDS_NEAR_KICKOFF_HOURS:
+        return settings.FETCH_ODDS_INTERVAL_NEAR_SECONDS
+    if proximity_hours <= settings.FETCH_ODDS_MID_KICKOFF_HOURS:
+        return settings.FETCH_ODDS_INTERVAL_MID_SECONDS
+    return settings.FETCH_ODDS_INTERVAL_FAR_SECONDS
+
+
+async def _next_match_proximity_hours(db) -> float | None:
+    """Horas hasta el próximo `commence_time` con detección activa.
+
+    Retorna None si no hay partidos en el horizonte ARB_MAX_HOURS_TO_KICKOFF.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from app.models.match import Match
+    from app.models.sport import League, Season
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    horizon = now + timedelta(hours=settings.ARB_MAX_HOURS_TO_KICKOFF)
+    next_commence = (
+        await db.execute(
+            select(func.min(Match.commence_time))
+            .join(Season, Season.id == Match.season_id)
+            .join(League, League.id == Season.league_id)
+            .where(
+                League.detection_enabled.is_(True),
+                Match.commence_time > now,
+                Match.commence_time <= horizon,
+            )
+        )
+    ).scalar()
+    if next_commence is None:
+        return None
+    return (next_commence - now).total_seconds() / 3600
+
+
 @tracked_job("fetch_odds")
 async def fetch_odds_job():
     """
@@ -62,7 +112,6 @@ async def fetch_odds_job():
         logger.warning("ODDS_API_KEY not configured, skipping fetch")
         return
 
-    from datetime import datetime, timezone
     hour_utc = datetime.now(timezone.utc).hour
     if _in_quiet_window(
         hour_utc,
@@ -79,6 +128,26 @@ async def fetch_odds_job():
 
     from sqlalchemy import select
     from app.models.sport import League, Sport
+
+    # Smart polling: el scheduler tickea cada NEAR_SECONDS, pero el job decide
+    # si fetchea según proximidad del próximo partido. El histórico 14d muestra
+    # que ~70% de arbs ≥3% profit nacen en la ventana 1-3h pre-kickoff.
+    global _last_fetch_at
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with async_session() as proximity_db:
+        proximity_hours = await _next_match_proximity_hours(proximity_db)
+    required_interval = _required_interval_seconds(proximity_hours)
+    if _last_fetch_at is not None:
+        elapsed = (now_utc - _last_fetch_at).total_seconds()
+        if elapsed < required_interval:
+            logger.info(
+                "Fetch throttled: next match in %s, required %ds, elapsed %ds",
+                f"{proximity_hours:.1f}h" if proximity_hours is not None else "n/a",
+                required_interval,
+                int(elapsed),
+            )
+            return
+    _last_fetch_at = now_utc
 
     adapter = OddsAPIAdapter()
     service = OddsIngestionService(adapter, TeamNormalizer())

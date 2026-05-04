@@ -92,7 +92,17 @@ async def _make_user_with_alert(db: AsyncSession, dest: str = "chat-1") -> None:
     await db.commit()
 
 
+@pytest.fixture(autouse=False)
+def reset_fetch_throttle(monkeypatch):
+    """Resetea el estado de throttle (_last_fetch_at) entre tests."""
+    monkeypatch.setattr(jobs_module, "_last_fetch_at", None)
+
+
 class TestFetchOddsJob:
+    @pytest.fixture(autouse=True)
+    def _reset_state(self, reset_fetch_throttle):
+        pass
+
     async def test_skips_when_no_api_key(
         self, patch_async_session, db_session, monkeypatch, caplog
     ):
@@ -104,6 +114,65 @@ class TestFetchOddsJob:
         with caplog.at_level(logging.WARNING, logger="app.workers.jobs"):
             await jobs_module.fetch_odds_job()
         assert any("ODDS_API_KEY" in rec.message for rec in caplog.records)
+
+    def test_required_interval_thresholds(self):
+        """_required_interval_seconds mapea proximity → cadencia correcta."""
+        from app.config import settings
+
+        assert (
+            jobs_module._required_interval_seconds(2.5)
+            == settings.FETCH_ODDS_INTERVAL_NEAR_SECONDS
+        )
+        assert (
+            jobs_module._required_interval_seconds(8.0)
+            == settings.FETCH_ODDS_INTERVAL_MID_SECONDS
+        )
+        assert (
+            jobs_module._required_interval_seconds(20.0)
+            == settings.FETCH_ODDS_INTERVAL_FAR_SECONDS
+        )
+        assert (
+            jobs_module._required_interval_seconds(None)
+            == settings.FETCH_ODDS_INTERVAL_FAR_SECONDS
+        )
+
+    async def test_throttles_when_last_fetch_recent(
+        self, patch_async_session, db_session, monkeypatch, caplog
+    ):
+        """Si _last_fetch_at es muy reciente para la cadencia objetivo, se salta."""
+        import logging
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "ODDS_API_KEY", "fake-key")
+        await seed_database(db_session)
+
+        # Fingimos un fetch hace 60s — bajo el NEAR de 300s.
+        recent = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
+        monkeypatch.setattr(jobs_module, "_last_fetch_at", recent)
+
+        # Match a 1h del kickoff para forzar bucket NEAR.
+        commence = datetime.now(timezone.utc) + timedelta(hours=1)
+        data = [
+            _raw("TH", "TA", "bet365",
+                 [("TH", 2.10), ("Draw", 3.30), ("TA", 3.60)], commence,
+                 league="soccer_epl"),
+        ]
+        await OddsIngestionService(FakeAdapter(data)).ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_epl"]
+        )
+
+        # Si llegara al adapter, este boom haría fallar el test.
+        class BoomAdapter(FakeAdapter):
+            async def fetch_odds(self, *a, **kw):
+                raise AssertionError("adapter must not be called when throttled")
+
+        monkeypatch.setattr(
+            jobs_module, "OddsAPIAdapter", lambda *a, **kw: BoomAdapter()
+        )
+
+        with caplog.at_level(logging.INFO, logger="app.workers.jobs"):
+            await jobs_module.fetch_odds_job()
+        assert any("Fetch throttled" in r.message for r in caplog.records)
 
     async def test_invokes_adapter_and_persists(
         self, patch_async_session, db_session, monkeypatch
