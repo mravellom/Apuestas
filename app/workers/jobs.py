@@ -45,6 +45,16 @@ SPORT_FETCH_SETTINGS: dict[str, dict[str, list[str]]] = {
         "regions": ["us", "us2", "eu"],
         "markets": ["h2h", "totals"],
     },
+    "mma": {
+        # MMA en Odds API es 2-way h2h puro. US offshore + Pinnacle (vía SportMarket)
+        # son la cobertura ejecutable desde Chile.
+        "regions": ["us", "us2", "eu"],
+        "markets": ["h2h"],
+    },
+    "boxing": {
+        "regions": ["us", "us2", "eu"],
+        "markets": ["h2h"],
+    },
 }
 
 

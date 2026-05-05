@@ -16,6 +16,8 @@ SPORTS = [
     {"key": "baseball", "name": "Baseball"},
     {"key": "americanfootball", "name": "American Football"},
     {"key": "icehockey", "name": "Ice Hockey"},
+    {"key": "mma", "name": "MMA"},
+    {"key": "boxing", "name": "Boxing"},
 ]
 
 LEAGUES = [
@@ -52,6 +54,12 @@ LEAGUES = [
     {"sport_key": "basketball", "key": "basketball_nba", "name": "NBA", "country": "USA", "detection_enabled": False},
     {"sport_key": "americanfootball", "key": "americanfootball_nfl", "name": "NFL", "country": "USA", "detection_enabled": False},
     {"sport_key": "icehockey", "key": "icehockey_nhl", "name": "NHL", "country": "USA", "detection_enabled": False},
+    # MMA — feed unificado en The Odds API (UFC + Bellator + PFL bajo una sola key).
+    # Prototipo: solo H2H 2-way; sharps (Pinnacle vía SportMarket) y US offshore lo cubren.
+    {"sport_key": "mma", "key": "mma_mixed_martial_arts", "name": "MMA", "country": "Global"},
+    # Boxing — feed unificado en The Odds API. Volumen menor que MMA (carteleras
+    # menos frecuentes), pero 2-way h2h puro y Pinnacle suele cotizar.
+    {"sport_key": "boxing", "key": "boxing_boxing", "name": "Boxing", "country": "Global"},
     # Ligas femeninas — opt-in. Se activan manualmente via /admin/leagues/.../toggle
     # cuando se quieran usar como complemento en días flojos de los mercados principales.
     {"sport_key": "basketball", "key": "basketball_wnba", "name": "WNBA", "country": "USA", "detection_enabled": False},
