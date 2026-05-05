@@ -20,6 +20,9 @@ export function Header() {
           ValueBet · Arbitraje
         </Link>
         <nav className="flex items-center gap-6 text-sm">
+          <Link href="/dashboard" className="text-muted hover:text-white">
+            Dashboard
+          </Link>
           <Link href="/arbitrage" className="text-muted hover:text-white">
             Oportunidades
           </Link>

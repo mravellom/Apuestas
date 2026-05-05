@@ -5,6 +5,7 @@ from app.api.v1 import (
     alerts,
     arbitrage,
     auth,
+    dashboard,
     execution,
     matches,
     opportunities,
@@ -29,3 +30,4 @@ router.include_router(alerts.router)
 router.include_router(admin.router)
 router.include_router(execution.router)
 router.include_router(planning.router)
+router.include_router(dashboard.router)

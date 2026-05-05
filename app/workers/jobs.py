@@ -203,6 +203,16 @@ async def fetch_odds_job():
                 )
                 for k in total:
                     total[k] += c.get(k, 0)
+                if adapter.last_usage is not None:
+                    from app.models.api_usage import ApiUsageLog
+                    db.add(ApiUsageLog(
+                        source=adapter.SOURCE,
+                        sport_key=sport_key,
+                        endpoint=adapter.last_usage.endpoint,
+                        requests_remaining=adapter.last_usage.requests_remaining,
+                        requests_used=adapter.last_usage.requests_used,
+                    ))
+                    await db.commit()
             counts = total
             logger.info(
                 "Fetch complete: %d events, %d odds saved, %d errors",

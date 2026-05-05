@@ -42,6 +42,16 @@ export type Bankroll = Schemas["BankrollResponse"];
 export type LegInstruction = Schemas["LegInstructionResponse"];
 export type ExecutionPlan = Schemas["ExecutionPlanResponse"];
 
+// ── Dashboard ─────────────────────────────────────────────────────────────
+export type DashboardSummary = Schemas["DashboardSummary"];
+export type SportActivity = Schemas["SportActivity"];
+export type LeagueArbCount = Schemas["LeagueArbCount"];
+export type BookCount = Schemas["BookCount"];
+export type ApiUsageSummary = Schemas["ApiUsageSummary"];
+
+// ── Admin / Leagues ───────────────────────────────────────────────────────
+export type AdminLeague = Schemas["app__api__v1__admin__LeagueResponse"];
+
 // ── Bets / Tracking ───────────────────────────────────────────────────────
 export type Bet = Schemas["BetResponse"];
 export type BetStatus = Bet["status"];

@@ -736,6 +736,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dashboard/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard Summary
+         * @description Devuelve todas las métricas del dashboard en una sola respuesta.
+         *
+         *     `window_days` controla la ventana para los rankings de arbs/valuebets
+         *     (no afecta a la lista de sports activos, que es estado actual).
+         */
+        get: operations["dashboard_summary_api_v1_dashboard_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -835,6 +858,21 @@ export interface components {
             expected_profit: number;
             /** Bookmakers */
             bookmakers: string[];
+        };
+        /** ApiUsageSummary */
+        ApiUsageSummary: {
+            /** Source */
+            source: string;
+            /** Requests Remaining */
+            requests_remaining: number | null;
+            /** Requests Used */
+            requests_used: number | null;
+            /** Last Captured At */
+            last_captured_at: string | null;
+            /** Calls 24H */
+            calls_24h: number;
+            /** Calls 7D */
+            calls_7d: number;
         };
         /** ArbHistoryItem */
         ArbHistoryItem: {
@@ -998,6 +1036,17 @@ export interface components {
             /** Settled At */
             settled_at: string | null;
         };
+        /** BookCount */
+        BookCount: {
+            /** Bookmaker */
+            bookmaker: string;
+            /** Count */
+            count: number;
+            /** Avg Pct */
+            avg_pct: number;
+            /** Max Pct */
+            max_pct: number;
+        };
         /** CLVBreakdown */
         CLVBreakdown: {
             /** Bets */
@@ -1075,6 +1124,23 @@ export interface components {
              */
             concentration_warnings: string[];
         };
+        /** DashboardSummary */
+        DashboardSummary: {
+            /** Window Days */
+            window_days: number;
+            /** Generated At */
+            generated_at: string;
+            /** Sports */
+            sports: components["schemas"]["SportActivity"][];
+            /** Top Leagues By Arbs */
+            top_leagues_by_arbs: components["schemas"]["LeagueArbCount"][];
+            /** Top Books Arbs */
+            top_books_arbs: components["schemas"]["BookCount"][];
+            /** Top Books Valuebets */
+            top_books_valuebets: components["schemas"]["BookCount"][];
+            /** Api Usage */
+            api_usage: components["schemas"]["ApiUsageSummary"][];
+        };
         /** ExecuteArbitrageRequest */
         ExecuteArbitrageRequest: {
             /** Bankroll Id */
@@ -1135,6 +1201,21 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** LeagueArbCount */
+        LeagueArbCount: {
+            /** League Key */
+            league_key: string;
+            /** League Name */
+            league_name: string;
+            /** Sport Key */
+            sport_key: string;
+            /** Arbs */
+            arbs: number;
+            /** Avg Profit Pct */
+            avg_profit_pct: number;
+            /** Max Profit Pct */
+            max_profit_pct: number;
         };
         /** LeagueToggleRequest */
         LeagueToggleRequest: {
@@ -1551,6 +1632,21 @@ export interface components {
             /** Actual Payout */
             actual_payout: number;
         };
+        /** SportActivity */
+        SportActivity: {
+            /** Sport Key */
+            sport_key: string;
+            /** Sport Name */
+            sport_name: string;
+            /** Leagues Total */
+            leagues_total: number;
+            /** Leagues Detection On */
+            leagues_detection_on: number;
+            /** Arbs */
+            arbs: number;
+            /** Valuebets */
+            valuebets: number;
+        };
         /** SportResponse */
         SportResponse: {
             /** Id */
@@ -1744,6 +1840,8 @@ export interface components {
             detection_enabled: boolean;
             /** Active */
             active: boolean;
+            /** Sport Key */
+            sport_key?: string | null;
         };
         /** LeagueResponse */
         app__schemas__sport__LeagueResponse: {
@@ -3044,6 +3142,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DailyPlanResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dashboard_summary_api_v1_dashboard_summary_get: {
+        parameters: {
+            query?: {
+                window_days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardSummary"];
                 };
             };
             /** @description Validation Error */

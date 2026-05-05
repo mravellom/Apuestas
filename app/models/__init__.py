@@ -1,4 +1,5 @@
 from app.models.alert import AlertConfig
+from app.models.api_usage import ApiUsageLog
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
 from app.models.broker import Broker
@@ -12,6 +13,7 @@ from app.models.user import Bankroll, User, UserConfig
 
 __all__ = [
     "AlertConfig",
+    "ApiUsageLog",
     "ArbitrageOpportunity",
     "Bankroll",
     "BetTracking",

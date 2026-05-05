@@ -2,6 +2,7 @@
 
 import { clearToken, getToken } from "./auth";
 import type {
+  AdminLeague,
   Arbitrage,
   ArbitrageHistoryItem,
   ArbitrageHistoryStatus,
@@ -11,6 +12,7 @@ import type {
   BetStatus,
   CurrentUser,
   DailyPlan,
+  DashboardSummary,
   ExecutionPlan,
   ExposureSummary,
   LoginResponse,
@@ -78,6 +80,31 @@ export async function login(email: string, password: string): Promise<LoginRespo
 
 export async function getMe(): Promise<CurrentUser> {
   return request<CurrentUser>("/api/v1/auth/me");
+}
+
+export async function getDashboardSummary(
+  windowDays: number = 7,
+): Promise<DashboardSummary> {
+  return request<DashboardSummary>(
+    `/api/v1/dashboard/summary?window_days=${windowDays}`,
+  );
+}
+
+export async function listAdminLeagues(): Promise<AdminLeague[]> {
+  return request<AdminLeague[]>("/api/v1/admin/leagues");
+}
+
+export async function toggleLeague(
+  leagueKey: string,
+  detectionEnabled: boolean,
+): Promise<AdminLeague> {
+  return request<AdminLeague>(
+    `/api/v1/admin/leagues/${encodeURIComponent(leagueKey)}/toggle`,
+    {
+      method: "POST",
+      body: JSON.stringify({ detection_enabled: detectionEnabled }),
+    },
+  );
 }
 
 export interface ArbitrageFilters {

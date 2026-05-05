@@ -1,11 +1,29 @@
 """Adapter para The Odds API v4."""
 
+from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
 
 from app.adapters.base import DataSourceAdapter, RawOddsData, RawOutcome
 from app.config import settings
+
+
+@dataclass
+class ApiUsageSnapshot:
+    """Headers de cuota devueltos por The Odds API en cada request."""
+    endpoint: str
+    sport_key: str | None
+    requests_remaining: int | None
+    requests_used: int | None
+
+
+def _parse_int_header(headers, key: str) -> int | None:
+    raw = headers.get(key)
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class OddsAPIAdapter(DataSourceAdapter):
@@ -20,12 +38,23 @@ class OddsAPIAdapter(DataSourceAdapter):
             for b in settings.BOOKMAKERS_ALLOWED.split(",")
             if b.strip()
         }
+        # Última lectura de headers de cuota; el caller la persiste.
+        self.last_usage: ApiUsageSnapshot | None = None
+
+    def _capture_usage(self, response: httpx.Response, endpoint: str, sport: str | None):
+        self.last_usage = ApiUsageSnapshot(
+            endpoint=endpoint,
+            sport_key=sport,
+            requests_remaining=_parse_int_header(response.headers, "x-requests-remaining"),
+            requests_used=_parse_int_header(response.headers, "x-requests-used"),
+        )
 
     async def fetch_events(self, sport: str) -> list[dict]:
         """Obtiene lista de eventos para un deporte."""
         url = f"{self.base_url}/sports/{sport}/events"
         response = await self.client.get(url, params={"apiKey": self.api_key})
         response.raise_for_status()
+        self._capture_usage(response, "events", sport)
         return response.json()
 
     async def fetch_odds(
@@ -55,6 +84,7 @@ class OddsAPIAdapter(DataSourceAdapter):
 
         response = await self.client.get(url, params=params)
         response.raise_for_status()
+        self._capture_usage(response, "odds", sport)
 
         raw_data: list[RawOddsData] = []
         for event in response.json():

@@ -24,6 +24,7 @@ class LeagueResponse(BaseModel):
     country: str | None
     detection_enabled: bool
     active: bool
+    sport_key: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -83,8 +84,21 @@ async def trigger_seed(db: DB, _user: AdminUser):
 @router.get("/leagues", response_model=list[LeagueResponse])
 async def list_leagues(db: DB, _user: AdminUser):
     """Lista todas las ligas con su estado de detection_enabled y active."""
-    rows = (await db.execute(select(League).order_by(League.key))).scalars().all()
-    return rows
+    rows = (
+        await db.execute(
+            select(League, Sport.key)
+            .join(Sport, Sport.id == League.sport_id)
+            .order_by(League.key)
+        )
+    ).all()
+    return [
+        LeagueResponse(
+            id=lg.id, key=lg.key, name=lg.name, country=lg.country,
+            detection_enabled=lg.detection_enabled, active=lg.active,
+            sport_key=sport_key,
+        )
+        for lg, sport_key in rows
+    ]
 
 
 @router.post("/leagues/{league_key}/toggle", response_model=LeagueResponse)
@@ -109,4 +123,9 @@ async def toggle_league_detection(
     league.detection_enabled = payload.detection_enabled
     await db.commit()
     await db.refresh(league)
-    return league
+    sport = await db.get(Sport, league.sport_id)
+    return LeagueResponse(
+        id=league.id, key=league.key, name=league.name, country=league.country,
+        detection_enabled=league.detection_enabled, active=league.active,
+        sport_key=sport.key if sport else None,
+    )
