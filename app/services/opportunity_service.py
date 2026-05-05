@@ -32,12 +32,18 @@ class OpportunityDetectionService:
         min_minutes_to_kickoff: int = 15,
         max_minutes_to_kickoff: int = 10080,  # 7 days — tighten to 48h for real betting
         reference_bookmaker: str | None = None,
+        max_odds_age_minutes: int = 30,
     ):
         self.min_value = min_value
         self.min_bookmakers = min_bookmakers
         self.min_minutes_to_kickoff = min_minutes_to_kickoff
         self.max_minutes_to_kickoff = max_minutes_to_kickoff
         self.reference_bookmaker = reference_bookmaker
+        # Cuotas mas viejas que esto se descartan al calcular consenso. Sin
+        # esto, un libro que dejo de actualizar (mercado suspendido sin que el
+        # feed lo marque) sigue contando hacia el "fair price" y emite value
+        # bets fantasma a precios que ya no existen.
+        self.max_odds_age_minutes = max_odds_age_minutes
         self.paper = PaperTradingService()
 
     async def detect_all(
@@ -199,18 +205,26 @@ class OpportunityDetectionService:
         Obtiene las últimas cuotas agrupadas por bookmaker.
         Retorna: {bookmaker_key: [odds_outcome_1, odds_outcome_2, ...]}
         """
+        from datetime import datetime, timedelta, timezone
         from sqlalchemy import func
 
         outcome_ids = [o.id for o in outcomes]
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = now - timedelta(minutes=self.max_odds_age_minutes)
 
-        # Get latest odds per outcome+bookmaker
+        # Get latest odds per outcome+bookmaker dentro de la ventana fresca.
+        # Sin el filtro `captured_at >= cutoff`, un libro caido contribuye a
+        # consenso con cuotas viejisimas -> value bets fantasma.
         latest_subq = (
             select(
                 Odds.outcome_id,
                 Odds.bookmaker_id,
                 func.max(Odds.captured_at).label("max_captured"),
             )
-            .where(Odds.outcome_id.in_(outcome_ids))
+            .where(
+                Odds.outcome_id.in_(outcome_ids),
+                Odds.captured_at >= cutoff,
+            )
             .group_by(Odds.outcome_id, Odds.bookmaker_id)
             .subquery()
         )

@@ -214,6 +214,64 @@ class TestOpportunityDetection:
             assert float(opp.consensus_prob) > 0
             assert float(opp.odds_price) > 1
 
+    async def test_detect_excludes_stale_odds_from_consensus(
+        self, db_session: AsyncSession
+    ):
+        """Odds older than max_odds_age_minutes must not contribute to consensus."""
+        match = await self._setup_match_with_odds(db_session)
+
+        # Push williamhill's odds (the soft-outlier 2.50 home) into the past so
+        # they're stale. Without the cutoff, that 2.50 would inflate the
+        # implied prob in the consensus and emit a fantom value bet at a price
+        # nobody currently offers.
+        wh = (
+            await db_session.execute(
+                select(Bookmaker).where(Bookmaker.key == "williamhill")
+            )
+        ).scalar_one()
+        old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=5)
+        await db_session.execute(
+            Odds.__table__.update()
+            .where(Odds.bookmaker_id == wh.id)
+            .values(captured_at=old)
+        )
+        await db_session.flush()
+
+        detector = OpportunityDetectionService(
+            min_value=0.01, min_bookmakers=3, max_odds_age_minutes=30
+        )
+        _, opps = await detector.detect_all(db_session)
+        # No value bet should reference williamhill since its odds are stale
+        wh_bets = [o for o in opps if o.bookmaker_id == wh.id]
+        assert wh_bets == []
+
+    async def test_detect_widening_age_window_lets_stale_odds_back_in(
+        self, db_session: AsyncSession
+    ):
+        """Loose max_odds_age_minutes restores the previous (buggy) behavior — sanity for the knob."""
+        await self._setup_match_with_odds(db_session)
+        wh = (
+            await db_session.execute(
+                select(Bookmaker).where(Bookmaker.key == "williamhill")
+            )
+        ).scalar_one()
+        old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=5)
+        await db_session.execute(
+            Odds.__table__.update()
+            .where(Odds.bookmaker_id == wh.id)
+            .values(captured_at=old)
+        )
+        await db_session.flush()
+
+        # 7-day window includes the 5h-old odds → williamhill back in the pool
+        detector = OpportunityDetectionService(
+            min_value=0.01, min_bookmakers=3, max_odds_age_minutes=10080
+        )
+        _, opps = await detector.detect_all(db_session)
+        # With WH back in consensus, the value bet on Valencia should appear
+        wh_bets = [o for o in opps if o.bookmaker_id == wh.id]
+        assert len(wh_bets) >= 1
+
     async def test_detect_updates_existing_opportunity(self, db_session: AsyncSession):
         """Running detection twice should update, not duplicate."""
         await self._setup_match_with_odds(db_session)
