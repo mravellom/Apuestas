@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.portfolio import PortfolioBet, allocate_portfolio
 from app.core.value_detector import ValueBet
@@ -45,6 +46,20 @@ PAPER_MAX_STAKE_UNITS = Decimal("0.05")  # cap 5% del bankroll por bet
 # techo agregado que un operador disciplinado mantiene. Arbitraje queda fuera del
 # cómputo (las legs están hedgeadas — el riesgo neto es muy menor que la suma).
 PAPER_MAX_TOTAL_EXPOSURE_UNITS = Decimal("0.20")  # 20% del bankroll en juego
+
+
+def _effective_commission(bookmaker: Bookmaker) -> Decimal:
+    """Comisión efectiva: la del libro, o la del broker si el libro es 0 y hay broker.
+
+    Refleja el patrón de `arbitrage_service` para que la comisión usada al
+    detectar arbs sea la misma que se aplica al liquidar el paper bet.
+    """
+    bk_pct = bookmaker.commission_pct or Decimal("0")
+    if bk_pct > 0:
+        return bk_pct
+    if bookmaker.broker is not None:
+        return bookmaker.broker.default_commission_pct or Decimal("0")
+    return Decimal("0")
 
 
 @dataclass
@@ -97,11 +112,24 @@ class PaperTradingService:
         )
         alloc_by_id = {a.bet_id: a for a in allocations}
 
+        # Pre-cargar bookmakers + broker para snapshotear commission_pct
+        bk_ids = {it.opportunity.bookmaker_id for it in items}
+        bookmakers = (
+            await db.execute(
+                select(Bookmaker)
+                .options(selectinload(Bookmaker.broker))
+                .where(Bookmaker.id.in_(bk_ids))
+            )
+        ).scalars().all()
+        bk_by_id = {b.id: b for b in bookmakers}
+
         created: list[PaperBet] = []
         for it in items:
             alloc = alloc_by_id.get(str(it.opportunity.id))
             if alloc is None or alloc.skipped or alloc.stake <= 0:
                 continue
+            bk = bk_by_id.get(it.opportunity.bookmaker_id)
+            commission = _effective_commission(bk) if bk else Decimal("0")
             paper = PaperBet(
                 source_type="value",
                 opportunity_id=it.opportunity.id,
@@ -111,6 +139,7 @@ class PaperTradingService:
                 odds_taken=Decimal(str(it.vb.bookmaker_odds)),
                 stake_units=Decimal(str(round(alloc.stake, 5))),
                 ev_at_placement=Decimal(str(it.vb.value_pct)),
+                commission_pct=commission,
             )
             db.add(paper)
             created.append(paper)
@@ -176,17 +205,32 @@ class PaperTradingService:
         arb: ArbitrageOpportunity,
     ) -> list[PaperBet]:
         """Registra una paper bet por cada leg del arbitraje."""
+        # Pre-cargar outcomes y bookmakers (con broker) en lookups por key,
+        # para evitar 2*N queries dentro del loop por leg.
+        outcome_keys = [leg["outcome"] for leg in arb.legs]
+        bk_keys = [leg["bookmaker"] for leg in arb.legs]
+        outcomes = (
+            await db.execute(
+                select(Outcome).where(
+                    Outcome.market_id == arb.market_id,
+                    Outcome.key.in_(outcome_keys),
+                )
+            )
+        ).scalars().all()
+        outcome_by_key = {o.key: o for o in outcomes}
+        bookmakers = (
+            await db.execute(
+                select(Bookmaker)
+                .options(selectinload(Bookmaker.broker))
+                .where(Bookmaker.key.in_(bk_keys))
+            )
+        ).scalars().all()
+        bk_by_key = {b.key: b for b in bookmakers}
+
         papers: list[PaperBet] = []
         for leg in arb.legs:
-            # Resolve outcome and bookmaker IDs from the stored leg data
-            outcome = (
-                await db.execute(
-                    select(Outcome).where(Outcome.market_id == arb.market_id, Outcome.key == leg["outcome"])
-                )
-            ).scalar_one_or_none()
-            bookmaker = (
-                await db.execute(select(Bookmaker).where(Bookmaker.key == leg["bookmaker"]))
-            ).scalar_one_or_none()
+            outcome = outcome_by_key.get(leg["outcome"])
+            bookmaker = bk_by_key.get(leg["bookmaker"])
             if not outcome or not bookmaker:
                 continue
             paper = PaperBet(
@@ -198,6 +242,7 @@ class PaperTradingService:
                 odds_taken=Decimal(str(leg["odds"])),
                 stake_units=Decimal(str(leg["stake_pct"])),
                 ev_at_placement=Decimal(str(arb.profit_pct)) / Decimal("100"),
+                commission_pct=_effective_commission(bookmaker),
             )
             db.add(paper)
             papers.append(paper)
@@ -252,7 +297,14 @@ class PaperTradingService:
 
             if verdict == "won":
                 paper.result = "won"
-                paper.profit_units = paper.stake_units * (paper.odds_taken - Decimal("1"))
+                # Aplicar la comisión snapshoteada al placement. Coherente con el
+                # detector de arbs/value: éste evalúa profit_pct con cuotas
+                # efectivas (1 + (odds-1)*(1-c)); el settle debe pagar igual,
+                # sino el ROI paper queda inflado vs la operación real.
+                # Back-compat: paper bets viejas sin commission_pct usan 0.
+                commission = paper.commission_pct or Decimal("0")
+                gross_profit = paper.stake_units * (paper.odds_taken - Decimal("1"))
+                paper.profit_units = gross_profit * (Decimal("1") - commission)
             elif verdict == "lost":
                 paper.result = "lost"
                 paper.profit_units = -paper.stake_units

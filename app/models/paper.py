@@ -28,6 +28,11 @@ class PaperBet(Base):
     outcome_id: Mapped[int] = mapped_column(ForeignKey("outcomes.id", ondelete="CASCADE"))
     bookmaker_id: Mapped[int] = mapped_column(ForeignKey("bookmakers.id"))
     odds_taken: Mapped[Decimal] = mapped_column(Numeric(8, 4))
+    # Comisión efectiva del libro/broker en el momento del placement (0..1).
+    # Snapshot: si el broker o el book cambia su comisión, el paper bet histórico
+    # mantiene la comisión real al momento del registro. Se aplica al settle de
+    # `won`: profit = stake * (odds - 1) * (1 - commission).
+    commission_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
     # Stake como fracción de bankroll (ej. 0.0020 = 0.2% Kelly/4). Unidades abstractas.
     stake_units: Mapped[Decimal] = mapped_column(Numeric(8, 5))
     ev_at_placement: Mapped[Decimal | None] = mapped_column(Numeric(8, 5))

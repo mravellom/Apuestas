@@ -136,13 +136,14 @@ async def test_settle_match_missing_scores_returns_zero():
 class TestSettlement:
     """Tests de cálculo de profit con DB mock controlado."""
 
-    def _make_row(self, outcome_key: str, odds: str, stake: str, market_type_key: str = "h2h", parameter=None):
+    def _make_row(self, outcome_key: str, odds: str, stake: str, market_type_key: str = "h2h", parameter=None, commission: str | None = None):
         paper = MagicMock()
         paper.result = "pending"
         paper.odds_taken = Decimal(odds)
         paper.stake_units = Decimal(stake)
         paper.profit_units = None
         paper.resolved_at = None
+        paper.commission_pct = Decimal(commission) if commission is not None else None
         outcome = MagicMock()
         outcome.key = outcome_key
         market = MagicMock()
@@ -247,3 +248,43 @@ class TestSettlement:
         assert r == {"settled": 0, "skipped": 1}
         assert paper.result == "pending"
         assert paper.profit_units is None
+
+    @pytest.mark.asyncio
+    async def test_won_applies_commission_when_snapshotted(self):
+        """Commission is deducted from profit on `won`, mirroring the arb detector."""
+        svc = PaperTradingService()
+        # Pinnacle via SportMarket: 1% commission on net winnings
+        paper_won, *rest_w = self._make_row("burnley", "2.0", "1.0", commission="0.01")
+        db = self._mock_db([(paper_won, *rest_w)])
+
+        match = MagicMock(id=1, home_team_id=10, away_team_id=20, home_score=2, away_score=0)
+        await svc.settle_match(db, match)
+
+        assert paper_won.result == "won"
+        # gross = 1.0 * (2.0 - 1) = 1.0; net = 1.0 * (1 - 0.01) = 0.99
+        assert paper_won.profit_units == Decimal("1.0") * (Decimal("2.0") - Decimal("1")) * (Decimal("1") - Decimal("0.01"))
+
+    @pytest.mark.asyncio
+    async def test_lost_ignores_commission(self):
+        """A losing bet loses the full stake regardless of commission."""
+        svc = PaperTradingService()
+        paper_lost, *rest_l = self._make_row("nottingham_forest", "1.5", "0.5", commission="0.01")
+        db = self._mock_db([(paper_lost, *rest_l)])
+
+        match = MagicMock(id=1, home_team_id=10, away_team_id=20, home_score=2, away_score=0)
+        await svc.settle_match(db, match)
+
+        assert paper_lost.result == "lost"
+        assert paper_lost.profit_units == -Decimal("0.5")
+
+    @pytest.mark.asyncio
+    async def test_won_without_commission_uses_full_profit(self):
+        """Back-compat: paper bets without commission_pct (legacy rows) settle as before."""
+        svc = PaperTradingService()
+        paper_won, *rest_w = self._make_row("burnley", "2.0", "1.0", commission=None)
+        db = self._mock_db([(paper_won, *rest_w)])
+
+        match = MagicMock(id=1, home_team_id=10, away_team_id=20, home_score=2, away_score=0)
+        await svc.settle_match(db, match)
+
+        assert paper_won.profit_units == Decimal("1.0") * (Decimal("2.0") - Decimal("1"))
