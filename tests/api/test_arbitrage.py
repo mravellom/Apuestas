@@ -166,3 +166,61 @@ class TestResponseShape:
         # JSON must deserialize to native float, not string (DecimalField trap)
         assert isinstance(arb["profit_pct"], (int, float))
         assert not isinstance(arb["profit_pct"], Decimal)
+
+
+class TestHistoryDateFilter:
+    async def test_from_date_excludes_older_arbs(
+        self, client, auth_headers, db_session
+    ):
+        await _seed_arbitrage(db_session)
+
+        # Push the arb's detected_at into the past
+        arb = (await db_session.execute(select(ArbitrageOpportunity))).scalar_one()
+        arb.detected_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=10)
+        await db_session.commit()
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        old = (datetime.now(timezone.utc).date() - timedelta(days=15)).isoformat()
+
+        # from_date today excludes the 10-day-old arb
+        filtered = await client.get(
+            f"/api/v1/arbitrage/history?from_date={today}", headers=auth_headers
+        )
+        assert filtered.status_code == 200
+        assert filtered.json() == []
+
+        # from_date 15 days ago includes it
+        included = await client.get(
+            f"/api/v1/arbitrage/history?from_date={old}", headers=auth_headers
+        )
+        assert len(included.json()) == 1
+
+    async def test_to_date_is_inclusive_end_of_day(
+        self, client, auth_headers, db_session
+    ):
+        await _seed_arbitrage(db_session)
+
+        arb = (await db_session.execute(select(ArbitrageOpportunity))).scalar_one()
+        target_day = datetime(2026, 4, 1, 23, 30, 0)
+        arb.detected_at = target_day
+        await db_session.commit()
+
+        # to_date = same day → must include (end-of-day inclusive)
+        same_day = await client.get(
+            "/api/v1/arbitrage/history?to_date=2026-04-01", headers=auth_headers
+        )
+        assert len(same_day.json()) == 1
+
+        # to_date = day before → must exclude
+        day_before = await client.get(
+            "/api/v1/arbitrage/history?to_date=2026-03-31", headers=auth_headers
+        )
+        assert day_before.json() == []
+
+    async def test_invalid_date_returns_422(
+        self, client, auth_headers
+    ):
+        bad = await client.get(
+            "/api/v1/arbitrage/history?from_date=not-a-date", headers=auth_headers
+        )
+        assert bad.status_code == 422

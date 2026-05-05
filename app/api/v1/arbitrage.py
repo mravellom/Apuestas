@@ -1,8 +1,9 @@
 """Endpoints de arbitraje."""
 
+from datetime import date, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,7 @@ class ArbLegResponse(BaseModel):
     bookmaker: str
     odds: float
     stake_pct: float
+    point: float | None = None
 
 
 class RevalidationResponse(BaseModel):
@@ -122,6 +124,8 @@ async def list_arbitrage(
 async def arbitrage_history(
     status: str | None = None,
     limit: int = 200,
+    from_date: date | None = Query(None, description="Filter detected_at >= from_date (UTC)"),
+    to_date: date | None = Query(None, description="Filter detected_at <= to_date end-of-day (UTC)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -139,6 +143,14 @@ async def arbitrage_history(
     )
     if status:
         query = query.where(ArbitrageOpportunity.status == status)
+    if from_date:
+        query = query.where(
+            ArbitrageOpportunity.detected_at >= datetime.combine(from_date, datetime.min.time())
+        )
+    if to_date:
+        query = query.where(
+            ArbitrageOpportunity.detected_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time())
+        )
 
     result = (await db.execute(query)).scalars().all()
 

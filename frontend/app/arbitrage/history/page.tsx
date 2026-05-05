@@ -52,11 +52,23 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "expired", label: "Expirados" },
 ];
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoIso(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function ArbitrageHistoryPage() {
   const router = useRouter();
   const [items, setItems] = useState<ArbitrageHistoryItem[]>([]);
   const [valueBets, setValueBets] = useState<OpportunityHistoryItem[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,6 +77,10 @@ export default function ArbitrageHistoryPage() {
     setError(null);
     try {
       const arbStatus = filter === "all" ? undefined : filter;
+      const dateFilters = {
+        fromDate: fromDate || undefined,
+        toDate: toDate || undefined,
+      };
       // Value bets no tienen estado "dead"; en ese filtro devolvemos vacío.
       const vbQuery =
         filter === "dead"
@@ -72,9 +88,10 @@ export default function ArbitrageHistoryPage() {
           : listOpportunityHistory({
               status: filter === "all" ? undefined : filter,
               limit: 500,
+              ...dateFilters,
             });
       const [arbs, vbs] = await Promise.all([
-        listArbitrageHistory({ status: arbStatus, limit: 500 }),
+        listArbitrageHistory({ status: arbStatus, limit: 500, ...dateFilters }),
         vbQuery,
       ]);
       setItems(arbs);
@@ -86,7 +103,7 @@ export default function ArbitrageHistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, fromDate, toDate]);
 
   useEffect(() => {
     if (!isAuthenticated()) {
@@ -95,6 +112,17 @@ export default function ArbitrageHistoryPage() {
     }
     void load();
   }, [load, router]);
+
+  function applyPreset(preset: "today" | "7d" | "30d" | "clear") {
+    if (preset === "clear") {
+      setFromDate("");
+      setToDate("");
+      return;
+    }
+    const today = todayIso();
+    setToDate(today);
+    setFromDate(preset === "today" ? today : daysAgoIso(preset === "7d" ? 6 : 29));
+  }
 
   const counts = useMemo(() => {
     const c = { total: items.length, active: 0, dead: 0, expired: 0 };
@@ -151,6 +179,60 @@ export default function ArbitrageHistoryPage() {
           >
             {loading ? "Cargando…" : "Refrescar"}
           </button>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded border border-border bg-surface p-3">
+          <span className="text-xs uppercase tracking-wide text-muted">Fecha</span>
+          <label className="flex items-center gap-1 text-xs text-muted">
+            Desde
+            <input
+              type="date"
+              value={fromDate}
+              max={toDate || undefined}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="rounded border border-border bg-bg px-2 py-1 text-sm text-white"
+            />
+          </label>
+          <label className="flex items-center gap-1 text-xs text-muted">
+            Hasta
+            <input
+              type="date"
+              value={toDate}
+              min={fromDate || undefined}
+              onChange={(e) => setToDate(e.target.value)}
+              className="rounded border border-border bg-bg px-2 py-1 text-sm text-white"
+            />
+          </label>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => applyPreset("today")}
+              className="rounded border border-border px-2 py-1 text-xs text-muted hover:border-accent hover:text-accent"
+            >
+              Hoy
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset("7d")}
+              className="rounded border border-border px-2 py-1 text-xs text-muted hover:border-accent hover:text-accent"
+            >
+              7d
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset("30d")}
+              className="rounded border border-border px-2 py-1 text-xs text-muted hover:border-accent hover:text-accent"
+            >
+              30d
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset("clear")}
+              className="rounded border border-border px-2 py-1 text-xs text-muted hover:border-accent hover:text-accent"
+            >
+              Limpiar
+            </button>
+          </div>
         </div>
 
         {error ? (

@@ -182,6 +182,37 @@ class TestUpsertBehavior:
         assert count1 == count2
         assert count1 >= 1
 
+    async def test_dead_with_same_legs_reopens_not_duplicates(
+        self, db_session: AsyncSession
+    ):
+        """A dead arb re-detected with the same legs should reopen, not duplicate."""
+        await _ingest_arbitrage_scenario(db_session)
+        service = ArbitrageDetectionService(min_bookmakers=5)
+
+        await service.detect_all(db_session)
+        arb = (
+            await db_session.execute(select(ArbitrageOpportunity))
+        ).scalar_one()
+        original_id = arb.id
+        original_detected_at = arb.detected_at
+
+        # Simulate the arb dying (e.g. one book briefly dropped its price)
+        arb.status = "dead"
+        arb.closed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db_session.flush()
+
+        # Same odds reappear -> same legs signature -> should reopen, not insert
+        await service.detect_all(db_session)
+        all_arbs = (
+            await db_session.execute(select(ArbitrageOpportunity))
+        ).scalars().all()
+
+        assert len(all_arbs) == 1
+        assert all_arbs[0].id == original_id
+        assert all_arbs[0].status == "active"
+        assert all_arbs[0].closed_at is None
+        assert all_arbs[0].detected_at == original_detected_at
+
     async def test_update_refreshes_profit_and_legs(self, db_session: AsyncSession):
         await _ingest_arbitrage_scenario(db_session)
         service = ArbitrageDetectionService(min_bookmakers=5)
@@ -199,6 +230,43 @@ class TestUpsertBehavior:
         await service.detect_all(db_session)
         await db_session.refresh(arb_before)
         assert float(arb_before.profit_pct) == profit_before
+
+
+class TestLegsPointField:
+    async def test_h2h_market_persists_point_as_none(
+        self, db_session: AsyncSession
+    ):
+        await _ingest_arbitrage_scenario(db_session)
+        service = ArbitrageDetectionService(min_bookmakers=5)
+        _, new_arbs = await service.detect_all(db_session)
+
+        assert len(new_arbs) >= 1
+        for leg in new_arbs[0].legs:
+            assert "point" in leg
+            assert leg["point"] is None
+
+    async def test_market_with_parameter_persists_point_value(
+        self, db_session: AsyncSession
+    ):
+        from sqlalchemy import delete
+
+        from app.models.market import Market
+
+        await _ingest_arbitrage_scenario(db_session)
+
+        # Inject a line into the market and clear any existing arb so the
+        # next detection rebuilds legs from scratch.
+        market = (await db_session.execute(select(Market))).scalars().first()
+        market.parameter = Decimal("8.50")
+        await db_session.execute(delete(ArbitrageOpportunity))
+        await db_session.flush()
+
+        service = ArbitrageDetectionService(min_bookmakers=5)
+        _, new_arbs = await service.detect_all(db_session)
+
+        assert len(new_arbs) >= 1
+        for leg in new_arbs[0].legs:
+            assert leg["point"] == 8.5
 
 
 class TestExpireArbs:

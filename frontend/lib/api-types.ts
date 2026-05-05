@@ -881,6 +881,8 @@ export interface components {
             odds: number;
             /** Stake Pct */
             stake_pct: number;
+            /** Point */
+            point?: number | null;
         };
         /** ArbResponse */
         ArbResponse: {
@@ -1804,6 +1806,10 @@ export interface operations {
             query?: {
                 status?: string | null;
                 limit?: number;
+                /** @description Filter detected_at >= from_date (UTC) */
+                from_date?: string | null;
+                /** @description Filter detected_at <= to_date end-of-day (UTC) */
+                to_date?: string | null;
             };
             header?: never;
             path?: never;
@@ -2171,6 +2177,10 @@ export interface operations {
             query?: {
                 status?: string | null;
                 limit?: number;
+                /** @description Filter detected_at >= from_date (UTC) */
+                from_date?: string | null;
+                /** @description Filter detected_at <= to_date end-of-day (UTC) */
+                to_date?: string | null;
             };
             header?: never;
             path?: never;

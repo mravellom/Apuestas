@@ -18,6 +18,8 @@ export function ArbitrageCard({ arb, capital, currency = "USD" }: Props) {
   const netProfit = guaranteed - capital;
   const accent = sportAccentColor(arb.sport, arb.league);
   const leagueLabel = prettyLeague(arb.league, arb.sport);
+  const point = arb.legs.find((l) => l.point != null)?.point ?? null;
+  const marketLabel = point != null ? `${arb.market_type} ${point}` : arb.market_type;
 
   return (
     <article
@@ -39,7 +41,7 @@ export function ArbitrageCard({ arb, capital, currency = "USD" }: Props) {
               {arb.match}
             </h3>
             <span className="rounded bg-border px-2 py-0.5 text-[10px] uppercase text-muted">
-              {arb.market_type}
+              {marketLabel}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted">
@@ -79,6 +81,9 @@ export function ArbitrageCard({ arb, capital, currency = "USD" }: Props) {
                 <tr key={`${arb.id}-${leg.outcome}-${leg.bookmaker}`}>
                   <td className="px-5 py-2 font-medium text-white">
                     {leg.outcome_name}
+                    {leg.point != null ? (
+                      <span className="ml-1 text-muted">{leg.point}</span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 uppercase text-muted">
                     {leg.bookmaker}

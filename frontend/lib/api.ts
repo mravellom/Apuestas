@@ -99,6 +99,8 @@ export async function listArbitrage(
 export interface ArbitrageHistoryFilters {
   status?: ArbitrageHistoryStatus;
   limit?: number;
+  fromDate?: string;
+  toDate?: string;
 }
 
 export async function listArbitrageHistory(
@@ -107,6 +109,8 @@ export async function listArbitrageHistory(
   const params = new URLSearchParams();
   if (filters.status) params.set("status", filters.status);
   params.set("limit", String(filters.limit ?? 200));
+  if (filters.fromDate) params.set("from_date", filters.fromDate);
+  if (filters.toDate) params.set("to_date", filters.toDate);
   return request<ArbitrageHistoryItem[]>(
     `/api/v1/arbitrage/history?${params.toString()}`,
   );
@@ -115,6 +119,8 @@ export async function listArbitrageHistory(
 export interface OpportunityHistoryFilters {
   status?: OpportunityHistoryStatus;
   limit?: number;
+  fromDate?: string;
+  toDate?: string;
 }
 
 export async function listOpportunityHistory(
@@ -123,6 +129,8 @@ export async function listOpportunityHistory(
   const params = new URLSearchParams();
   if (filters.status) params.set("status", filters.status);
   params.set("limit", String(filters.limit ?? 200));
+  if (filters.fromDate) params.set("from_date", filters.fromDate);
+  if (filters.toDate) params.set("to_date", filters.toDate);
   return request<OpportunityHistoryItem[]>(
     `/api/v1/opportunities/history?${params.toString()}`,
   );

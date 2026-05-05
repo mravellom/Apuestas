@@ -269,6 +269,12 @@ class ArbitrageDetectionService:
                 )
 
         # Re-precea cada leg con su última cuota específica.
+        market = await db.get(Market, arb.market_id)
+        point = (
+            float(market.parameter)
+            if market is not None and market.parameter is not None
+            else None
+        )
         repriced: list[dict] = []
         effective_implied_sum = 0.0
 
@@ -313,6 +319,7 @@ class ArbitrageDetectionService:
                 "bookmaker": leg["bookmaker"],
                 "odds": odds_f,
                 "stake_pct": (1.0 / eff_odds),  # se normaliza abajo
+                "point": point,
             })
 
         if effective_implied_sum >= 1.0:
@@ -425,6 +432,8 @@ class ArbitrageDetectionService:
 
         return odds_by_bookmaker
 
+    REOPEN_WINDOW_HOURS = 6
+
     async def _save_arb(
         self,
         db: AsyncSession,
@@ -432,8 +441,21 @@ class ArbitrageDetectionService:
         market: Market,
         match: Match,
     ) -> ArbitrageOpportunity | None:
-        # Check if already exists for this market
-        existing = (
+        point = float(market.parameter) if market.parameter is not None else None
+        legs_data = [
+            {
+                "outcome": leg.outcome_key,
+                "outcome_name": leg.outcome_name,
+                "bookmaker": leg.bookmaker_key,
+                "odds": leg.best_odds,
+                "stake_pct": leg.stake_pct,
+                "point": point,
+            }
+            for leg in arb.legs
+        ]
+
+        # Active arb for the same market is always an upsert target.
+        active = (
             await db.execute(
                 select(ArbitrageOpportunity).where(
                     ArbitrageOpportunity.match_id == match.id,
@@ -443,36 +465,60 @@ class ArbitrageDetectionService:
             )
         ).scalar_one_or_none()
 
-        legs_data = [
-            {
-                "outcome": leg.outcome_key,
-                "outcome_name": leg.outcome_name,
-                "bookmaker": leg.bookmaker_key,
-                "odds": leg.best_odds,
-                "stake_pct": leg.stake_pct,
-            }
-            for leg in arb.legs
-        ]
+        if active:
+            active.total_implied = Decimal(str(arb.total_implied))
+            active.profit_pct = Decimal(str(arb.profit_pct))
+            active.legs = legs_data
+            return None
 
-        if existing:
-            existing.total_implied = Decimal(str(arb.total_implied))
-            existing.profit_pct = Decimal(str(arb.profit_pct))
-            existing.legs = legs_data
-            return None  # updated, not new
-        else:
-            record = ArbitrageOpportunity(
-                match_id=match.id,
-                market_id=market.id,
-                total_implied=Decimal(str(arb.total_implied)),
-                profit_pct=Decimal(str(arb.profit_pct)),
-                num_outcomes=arb.num_outcomes,
-                legs=legs_data,
-                expires_at=match.commence_time,
+        # No active arb: try to reopen a recent dead one with the same legs
+        # signature (same bookmaker+outcome set), so we don't create a duplicate
+        # row each time the market oscillates in and out of arb territory.
+        new_signature = frozenset(
+            (leg.bookmaker_key, leg.outcome_key) for leg in arb.legs
+        )
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            hours=self.REOPEN_WINDOW_HOURS
+        )
+        recent_dead = (
+            await db.execute(
+                select(ArbitrageOpportunity)
+                .where(
+                    ArbitrageOpportunity.match_id == match.id,
+                    ArbitrageOpportunity.market_id == market.id,
+                    ArbitrageOpportunity.status == "dead",
+                    ArbitrageOpportunity.closed_at >= cutoff,
+                )
+                .order_by(ArbitrageOpportunity.closed_at.desc())
             )
-            db.add(record)
-            await db.flush()
-            await self.paper.record_arbitrage(db, record)
-            return record
+        ).scalars().all()
+
+        for candidate in recent_dead:
+            cand_signature = frozenset(
+                (leg.get("bookmaker"), leg.get("outcome"))
+                for leg in (candidate.legs or [])
+            )
+            if cand_signature == new_signature:
+                candidate.status = "active"
+                candidate.closed_at = None
+                candidate.total_implied = Decimal(str(arb.total_implied))
+                candidate.profit_pct = Decimal(str(arb.profit_pct))
+                candidate.legs = legs_data
+                return None
+
+        record = ArbitrageOpportunity(
+            match_id=match.id,
+            market_id=market.id,
+            total_implied=Decimal(str(arb.total_implied)),
+            profit_pct=Decimal(str(arb.profit_pct)),
+            num_outcomes=arb.num_outcomes,
+            legs=legs_data,
+            expires_at=match.commence_time,
+        )
+        db.add(record)
+        await db.flush()
+        await self.paper.record_arbitrage(db, record)
+        return record
 
     async def _expire_arbs(self, db: AsyncSession, now: datetime) -> int:
         result = (
