@@ -718,3 +718,114 @@ async def test_settle_leg_lost_debits_bankroll(db_session):
     await db_session.refresh(fx["bankroll"])
     # current_amount bajó por el stake perdido
     assert fx["bankroll"].current_amount == Decimal("10000.00") - leg.stake_amount
+
+
+@pytest.mark.asyncio
+async def test_settle_leg_rejects_lost_with_positive_payout(db_session):
+    """Dedo gordo: result=lost con payout>0 corrompe el bankroll. Debe rechazar."""
+    from app.services.execution_service import ExecutionError
+
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000.00"),
+    )
+    leg = plan.legs[0]
+    await svc.mark_leg_placed(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        odds_at_placement=Decimal("2.10"),
+    )
+
+    with pytest.raises(ExecutionError, match="result=lost requires payout=0"):
+        await svc.settle_leg(
+            db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+            result="lost", actual_payout=Decimal("500"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_settle_leg_rejects_won_with_payout_below_stake(db_session):
+    """result=won pero payout<stake = imposible (ganaste y recuperás menos que apostado)."""
+    from app.services.execution_service import ExecutionError
+
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000.00"),
+    )
+    leg = plan.legs[0]
+    await svc.mark_leg_placed(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        odds_at_placement=Decimal("2.10"),
+    )
+
+    half_stake = leg.stake_amount / Decimal("2")
+    with pytest.raises(ExecutionError, match="result=won requires payout>=stake"):
+        await svc.settle_leg(
+            db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+            result="won", actual_payout=half_stake,
+        )
+
+
+@pytest.mark.asyncio
+async def test_settle_leg_rejects_void_with_wrong_payout(db_session):
+    """result=void exige payout==stake (devolución integra)."""
+    from app.services.execution_service import ExecutionError
+
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000.00"),
+    )
+    leg = plan.legs[0]
+    await svc.mark_leg_placed(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        odds_at_placement=Decimal("2.10"),
+    )
+
+    with pytest.raises(ExecutionError, match="result=void requires payout=stake"):
+        await svc.settle_leg(
+            db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+            result="void", actual_payout=Decimal("0"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_settle_leg_void_accepts_payout_equal_to_stake(db_session):
+    """Sanity: void con payout=stake (caso correcto) no debe levantar."""
+    fx = await _make_fixture(db_session)
+    svc = ExecutionService()
+    plan = await svc.execute_arbitrage_manual(
+        db_session,
+        arbitrage_id=fx["arb"].id,
+        user_id=fx["user"].id,
+        bankroll_id=fx["bankroll"].id,
+        total_stake=Decimal("1000.00"),
+    )
+    leg = plan.legs[0]
+    await svc.mark_leg_placed(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        odds_at_placement=Decimal("2.10"),
+    )
+    await svc.settle_leg(
+        db_session, bet_id=leg.bet_id, user_id=fx["user"].id,
+        result="void", actual_payout=leg.stake_amount,
+    )
+
+    bet = (
+        await db_session.execute(select(BetTracking).where(BetTracking.id == leg.bet_id))
+    ).scalar_one()
+    assert bet.result == "void"
+    assert bet.profit_loss == Decimal("0")

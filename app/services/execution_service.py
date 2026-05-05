@@ -394,6 +394,33 @@ class ExecutionService:
         if bet.status not in ("placed", "confirmed"):
             raise ExecutionError(f"Cannot settle bet in status '{bet.status}'")
 
+        # Validacion semantica result <-> actual_payout para atrapar errores
+        # del usuario (dedo gordo en el form: "won" con payout 0, "lost" con
+        # payout > 0). Sin esto, el bankroll se corrompe silenciosamente.
+        # Tolerancia 1 centavo para void y comparaciones de igualdad.
+        eps = Decimal("0.01")
+        stake = bet.stake_amount
+        if result == "lost" and actual_payout > eps:
+            raise ExecutionError(
+                f"Inconsistent: result=lost requires payout=0, got {actual_payout}"
+            )
+        if result == "void" and abs(actual_payout - stake) > eps:
+            raise ExecutionError(
+                f"Inconsistent: result=void requires payout=stake ({stake}), got {actual_payout}"
+            )
+        if result == "won" and actual_payout < stake - eps:
+            raise ExecutionError(
+                f"Inconsistent: result=won requires payout>=stake ({stake}), got {actual_payout}"
+            )
+        if result == "half_lost" and (actual_payout < -eps or actual_payout >= stake + eps):
+            raise ExecutionError(
+                f"Inconsistent: result=half_lost expects 0<=payout<stake ({stake}), got {actual_payout}"
+            )
+        if result == "half_won" and actual_payout <= stake - eps:
+            raise ExecutionError(
+                f"Inconsistent: result=half_won requires payout>stake ({stake}), got {actual_payout}"
+            )
+
         # Lock del bankroll: elimina race con otras ops concurrentes.
         bankroll = (
             await db.execute(
