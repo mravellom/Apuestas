@@ -55,6 +55,10 @@ SPORT_FETCH_SETTINGS: dict[str, dict[str, list[str]]] = {
         "regions": ["us", "us2", "eu"],
         "markets": ["h2h"],
     },
+    "tennis": {
+        "regions": ["eu", "us", "us2"],
+        "markets": ["h2h"],
+    },
 }
 
 
