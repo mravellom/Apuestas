@@ -92,16 +92,10 @@ async def _make_user_with_alert(db: AsyncSession, dest: str = "chat-1") -> None:
     await db.commit()
 
 
-@pytest.fixture(autouse=False)
-def reset_fetch_throttle(monkeypatch):
-    """Resetea el estado de throttle (_last_fetch_at) entre tests."""
-    monkeypatch.setattr(jobs_module, "_last_fetch_at", None)
-
-
 class TestFetchOddsJob:
-    @pytest.fixture(autouse=True)
-    def _reset_state(self, reset_fetch_throttle):
-        pass
+    pass  # throttle ahora se persiste en api_usage_log; cada test
+    # usa una DB limpia (db_session fixture) por lo que no hay state cross-test
+    # que limpiar a nivel de módulo.
 
     async def test_skips_when_no_api_key(
         self, patch_async_session, db_session, monkeypatch, caplog
@@ -139,16 +133,26 @@ class TestFetchOddsJob:
     async def test_throttles_when_last_fetch_recent(
         self, patch_async_session, db_session, monkeypatch, caplog
     ):
-        """Si _last_fetch_at es muy reciente para la cadencia objetivo, se salta."""
+        """Si el último fetch persistido es reciente, el job se salta."""
         import logging
         from app.config import settings
+        from app.adapters.odds_api import OddsAPIAdapter
+        from app.models.api_usage import ApiUsageLog
 
         monkeypatch.setattr(settings, "ODDS_API_KEY", "fake-key")
         await seed_database(db_session)
 
-        # Fingimos un fetch hace 60s — bajo el NEAR de 300s.
+        # Persistimos un fetch hecho hace 60s — bajo el NEAR de 300s.
         recent = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
-        monkeypatch.setattr(jobs_module, "_last_fetch_at", recent)
+        db_session.add(ApiUsageLog(
+            source=OddsAPIAdapter.SOURCE,
+            sport_key="football",
+            endpoint="odds",
+            requests_remaining=10000,
+            requests_used=100,
+            captured_at=recent,
+        ))
+        await db_session.commit()
 
         # Match a 1h del kickoff para forzar bucket NEAR.
         commence = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -204,16 +208,19 @@ class TestFetchOddsJob:
         # Adapter must be closed
         assert fake_adapter.closed is True
 
-    async def test_swallows_adapter_exception(
+    async def test_swallows_per_sport_ingestion_exception(
         self, patch_async_session, db_session, monkeypatch, caplog
     ):
-        """Even if ingestion blows up, the job must close the adapter and log."""
+        """Una falla en ingestion de un sport NO debe matar el job ni los demás sports.
+
+        Antes el outer try/except lo atrapaba todo y el job entero quedaba
+        marcado como 'Fetch odds job failed'. Ahora cada sport falla por
+        separado y los siguientes siguen ejecutándose; se loguea con stack
+        ('Sport X fetch failed') y el adapter se cierra correctamente.
+        """
         import logging
         from app.config import settings
         monkeypatch.setattr(settings, "ODDS_API_KEY", "fake-key")
-
-        # El seed crea ligas con detection_enabled=True — sin eso el job moderno
-        # devuelve temprano "nothing to fetch" y nunca hits la ruta de excepción.
         await seed_database(db_session)
 
         adapter = FakeAdapter()
@@ -228,7 +235,8 @@ class TestFetchOddsJob:
 
         with caplog.at_level(logging.ERROR, logger="app.workers.jobs"):
             await jobs_module.fetch_odds_job()  # must not raise
-        assert any("Fetch odds job failed" in rec.message for rec in caplog.records)
+        # Ahora el log es por-sport, no a nivel job
+        assert any("fetch failed" in rec.message.lower() for rec in caplog.records)
         assert adapter.closed is True
 
 

@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # The Odds API
     ODDS_API_KEY: str = ""
     ODDS_API_BASE_URL: str = "https://api.the-odds-api.com/v4"
+    # Threshold para alertar bajo consumo de quota. Cuando requests_remaining
+    # cae bajo este valor, fetch_odds_job loguea warning y dispara admin alert
+    # una sola vez por umbral cruzado. En 0 el job omite el fetch (sin
+    # créditos = no tiene sentido pegar al endpoint).
+    ODDS_API_LOW_QUOTA_THRESHOLD: int = 200
     # Comma-separated bookmaker keys. Empty = accept all. Non-empty = allowlist applied at ingest.
     BOOKMAKERS_ALLOWED: str = ""
     # Value detection reference model. Empty = consensus (needs >=3 books).

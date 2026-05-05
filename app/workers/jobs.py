@@ -13,9 +13,26 @@ from app.services.opportunity_service import OpportunityDetectionService
 
 logger = logging.getLogger(__name__)
 
-# Timestamp del último fetch_odds que efectivamente llamó al adapter.
-# Vive en memoria del proceso — el primer tick post-restart siempre fetchea.
-_last_fetch_at: datetime | None = None
+
+async def _get_last_successful_fetch_at(db) -> datetime | None:
+    """Última vez que fetch_odds_job persistió un ApiUsageLog (señal de éxito).
+
+    Reemplaza al `_last_fetch_at` en memoria: persiste cross-restart y solo
+    avanza tras un fetch que efectivamente llamó al adapter y commiteó. Si el
+    job explota antes del primer commit de usage, no marca falsa actividad —
+    el siguiente tick reintenta correctamente.
+    """
+    from sqlalchemy import select as _select
+    from app.models.api_usage import ApiUsageLog as _Log
+
+    return (
+        await db.execute(
+            _select(_Log.captured_at)
+            .where(_Log.source == "odds_api")
+            .order_by(_Log.captured_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 # Regiones y mercados por deporte — hardcoded porque no cambian por liga.
@@ -146,13 +163,13 @@ async def fetch_odds_job():
     # Smart polling: el scheduler tickea cada NEAR_SECONDS, pero el job decide
     # si fetchea según proximidad del próximo partido. El histórico 14d muestra
     # que ~70% de arbs ≥3% profit nacen en la ventana 1-3h pre-kickoff.
-    global _last_fetch_at
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     async with async_session() as proximity_db:
         proximity_hours = await _next_match_proximity_hours(proximity_db)
+        last_fetch_at = await _get_last_successful_fetch_at(proximity_db)
     required_interval = _required_interval_seconds(proximity_hours)
-    if _last_fetch_at is not None:
-        elapsed = (now_utc - _last_fetch_at).total_seconds()
+    if last_fetch_at is not None:
+        elapsed = (now_utc - last_fetch_at).total_seconds()
         if elapsed < required_interval:
             logger.info(
                 "Fetch throttled: next match in %s, required %ds, elapsed %ds",
@@ -161,7 +178,6 @@ async def fetch_odds_job():
                 int(elapsed),
             )
             return
-    _last_fetch_at = now_utc
 
     adapter = OddsAPIAdapter()
     service = OddsIngestionService(adapter, TeamNormalizer())
@@ -185,7 +201,32 @@ async def fetch_odds_job():
             for sport_key, league_key in active:
                 leagues_by_sport.setdefault(sport_key, []).append(league_key)
 
+            # Quota guard: si el último snapshot persistido dice 0 créditos,
+            # no tiene sentido pegar al endpoint. Igual chequeamos por sport
+            # post-fetch para cortar antes de gastar el resto en el resto.
+            from app.models.api_usage import ApiUsageLog
+            from app.admin_alerter import send_admin_alert
+
+            last_known = (
+                await db.execute(
+                    select(ApiUsageLog.requests_remaining)
+                    .where(ApiUsageLog.source == "odds_api")
+                    .order_by(ApiUsageLog.captured_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if last_known is not None and last_known <= 0:
+                logger.warning(
+                    "Odds API quota exhausted (last_known=%d); skipping fetch", last_known
+                )
+                await send_admin_alert(
+                    f"Odds API quota agotada (last_known={last_known}). "
+                    "Fetches pausados hasta reset mensual o upgrade del plan."
+                )
+                return
+
             total = {"events": 0, "odds_saved": 0, "errors": 0}
+            low_quota_alerted = False
             for sport_key, league_keys in leagues_by_sport.items():
                 cfg = SPORT_FETCH_SETTINGS.get(sport_key)
                 if cfg is None:
@@ -194,32 +235,74 @@ async def fetch_odds_job():
                         sport_key, len(league_keys),
                     )
                     continue
-                c = await service.ingest_odds(
-                    db,
-                    sport_key=sport_key,
-                    league_keys=league_keys,
-                    regions=cfg["regions"],
-                    markets=cfg["markets"],
-                )
-                for k in total:
-                    total[k] += c.get(k, 0)
-                if adapter.last_usage is not None:
-                    from app.models.api_usage import ApiUsageLog
+                # Chequeo previo por sport: si la última lectura dice 0, no
+                # pegues al endpoint (evita 401/403 por quota agotada).
+                pre_usage = getattr(adapter, "last_usage", None)
+                if (
+                    pre_usage is not None
+                    and pre_usage.requests_remaining is not None
+                    and pre_usage.requests_remaining <= 0
+                ):
+                    logger.warning(
+                        "Odds API quota hit 0 mid-run; aborting remaining sports"
+                    )
+                    await send_admin_alert(
+                        "Odds API quota agotada durante fetch_odds_job. "
+                        f"Sports restantes saltados: {len(leagues_by_sport)}"
+                    )
+                    break
+                try:
+                    c = await service.ingest_odds(
+                        db,
+                        sport_key=sport_key,
+                        league_keys=league_keys,
+                        regions=cfg["regions"],
+                        markets=cfg["markets"],
+                    )
+                    for k in total:
+                        total[k] += c.get(k, 0)
+                except Exception:
+                    # Una falla por sport no debe matar el job: persistencia
+                    # parcial OK, el siguiente tick reintenta lo no completado.
+                    logger.exception(
+                        "Sport %s fetch failed; continuing with remaining sports",
+                        sport_key,
+                    )
+                    total["errors"] += 1
+                usage = getattr(adapter, "last_usage", None)
+                if usage is not None:
                     db.add(ApiUsageLog(
                         source=adapter.SOURCE,
                         sport_key=sport_key,
-                        endpoint=adapter.last_usage.endpoint,
-                        requests_remaining=adapter.last_usage.requests_remaining,
-                        requests_used=adapter.last_usage.requests_used,
+                        endpoint=usage.endpoint,
+                        requests_remaining=usage.requests_remaining,
+                        requests_used=usage.requests_used,
                     ))
                     await db.commit()
+                    # Alerta una sola vez por run cuando cruzamos el umbral.
+                    rem = usage.requests_remaining
+                    if (
+                        rem is not None
+                        and 0 < rem < settings.ODDS_API_LOW_QUOTA_THRESHOLD
+                        and not low_quota_alerted
+                    ):
+                        logger.warning(
+                            "Odds API low quota: %d remaining (threshold %d)",
+                            rem, settings.ODDS_API_LOW_QUOTA_THRESHOLD,
+                        )
+                        await send_admin_alert(
+                            f"Odds API quota baja: {rem} requests restantes "
+                            f"(threshold {settings.ODDS_API_LOW_QUOTA_THRESHOLD})."
+                        )
+                        low_quota_alerted = True
+                        low_quota_alerted = True
             counts = total
             logger.info(
                 "Fetch complete: %d events, %d odds saved, %d errors",
                 counts["events"], counts["odds_saved"], counts["errors"],
             )
     except Exception as e:
-        logger.error(f"Fetch odds job failed: {e}")
+        logger.exception("Fetch odds job failed")
     finally:
         await adapter.close()
 
@@ -257,7 +340,7 @@ async def detect_value_job():
                     notif_counts["failed"],
                 )
     except Exception as e:
-        logger.error(f"Detect value job failed: {e}")
+        logger.exception("Detect value job failed")
 
 
 @tracked_job("detect_arbitrage")
@@ -345,7 +428,7 @@ async def detect_arbitrage_job():
                             else:
                                 failed += 1
                         except Exception as e:
-                            logger.error("Arb notification error: %s", e)
+                            logger.exception("Arb notification error")
                             failed += 1
             finally:
                 await notifier.close()
@@ -353,7 +436,7 @@ async def detect_arbitrage_job():
             logger.info("Arb notifications: %d sent, %d failed", sent, failed)
 
     except Exception as e:
-        logger.error("Detect arbitrage job failed: %s", e)
+        logger.exception("Detect arbitrage job failed")
 
 
 @tracked_job("capture_closing_lines")
@@ -444,7 +527,7 @@ async def capture_closing_lines_job():
                 captured, len(matches), clv_filled,
             )
     except Exception as e:
-        logger.error(f"Capture closing lines job failed: {e}")
+        logger.exception("Capture closing lines job failed")
 
 
 @tracked_job("fetch_scores")
@@ -498,7 +581,7 @@ async def fetch_scores_job():
                     continue
                 events = r.json()
             except Exception as e:
-                logger.error("Scores fetch error for %s: %s", league, e)
+                logger.exception("Scores fetch error for %s", league)
                 continue
 
             async with async_session() as db:
@@ -559,4 +642,4 @@ async def cleanup_job():
             await db.commit()
             logger.info("Cleanup: %d matches marked completed", completed)
     except Exception as e:
-        logger.error(f"Cleanup job failed: {e}")
+        logger.exception("Cleanup job failed")
