@@ -295,8 +295,11 @@ class ArbitrageDetectionService:
                 )
             ).scalar_one_or_none()
 
-            if latest_odds is None or float(latest_odds) <= 1.0:
-                # Ese leg no tiene cuota fresca — arb no es ejecutable.
+            if latest_odds is None or float(latest_odds) <= SUSPENDED_ODDS_THRESHOLD:
+                # Ese leg no tiene cuota fresca o esta suspendido (cuota cantada
+                # ~1.0x es la firma de un libro que retiro el mercado). Sin
+                # ejecutable. Coherente con el filtro a nivel de market arriba
+                # (lineas 244-269) que ya usa SUSPENDED_ODDS_THRESHOLD.
                 return RevalidationResult(
                     status="dead",
                     detected_profit_pct=detected_pct,

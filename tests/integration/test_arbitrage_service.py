@@ -503,3 +503,50 @@ class TestSuspendedOddsFilter:
         assert result.status == "dead", (
             f"esperado dead por suspensión, fue {result.status}"
         )
+
+    async def test_revalidate_marks_dead_when_leg_odds_at_suspended_threshold(
+        self, db_session: AsyncSession
+    ):
+        """Cuotas en (1.0, 1.05] sobre el leg propio del arb deben marcarse dead.
+
+        Antes el filtro era `<= 1.0`, dejando pasar 1.01-1.05 que son la firma
+        de un mercado parcialmente suspendido por el libro. Ahora consistente
+        con el threshold a nivel de mercado.
+        """
+        from datetime import datetime as _dt
+        from app.models.bookmaker import Bookmaker
+        from app.models.market import Odds, Outcome
+
+        commence = datetime.now(timezone.utc) + timedelta(days=1)
+        await _ingest_arbitrage_scenario(
+            db_session, home="Edge Home", away="Edge Away", commence=commence
+        )
+
+        svc = ArbitrageDetectionService(min_bookmakers=5)
+        _, new_arbs = await svc.detect_all(db_session)
+        assert len(new_arbs) >= 1
+        arb = new_arbs[0]
+        await db_session.commit()
+
+        # Bajar la cuota del propio leg del arb a 1.03 (en zona suspendida).
+        target_leg = arb.legs[0]
+        bk = (await db_session.execute(
+            select(Bookmaker).where(Bookmaker.key == target_leg["bookmaker"])
+        )).scalar_one()
+        outcome = (await db_session.execute(
+            select(Outcome).where(
+                Outcome.market_id == arb.market_id,
+                Outcome.key == target_leg["outcome"],
+            )
+        )).scalar_one()
+        db_session.add(Odds(
+            outcome_id=outcome.id,
+            bookmaker_id=bk.id,
+            price=Decimal("1.03"),
+            captured_at=_dt.utcnow(),
+            source="test",
+        ))
+        await db_session.commit()
+
+        result = await svc.revalidate_arb(db_session, arb.id)
+        assert result.status == "dead"
