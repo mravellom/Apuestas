@@ -40,8 +40,8 @@ class WebhookNotifier(Notifier):
                     "Webhook error %d: %s", response.status_code, response.text
                 )
                 return False
-        except Exception as e:
-            logger.error("Failed to send webhook notification to %s: %s", destination, e)
+        except Exception:
+            logger.exception("Failed to send webhook notification to %s", destination)
             return False
 
     async def close(self):

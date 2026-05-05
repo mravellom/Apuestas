@@ -106,8 +106,8 @@ class NotificationService:
                         counts["sent"] += 1
                     else:
                         counts["failed"] += 1
-                except Exception as e:
-                    logger.error("Notification error for alert %d: %s", alert.id, e)
+                except Exception:
+                    logger.exception("Notification error for alert %d", alert.id)
                     counts["failed"] += 1
 
         return counts

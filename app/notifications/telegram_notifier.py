@@ -58,8 +58,8 @@ class TelegramNotifier(Notifier):
                     "Telegram API error %d: %s", response.status_code, response.text
                 )
                 return False
-        except Exception as e:
-            logger.error("Failed to send Telegram notification: %s", e)
+        except Exception:
+            logger.exception("Failed to send Telegram notification")
             return False
 
     async def close(self):

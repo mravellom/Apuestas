@@ -99,8 +99,8 @@ class ArbitrageDetectionService:
                 counts["markets_scanned"] += scanned
                 counts["arbs_found"] += len(found)
                 new_arbs.extend(found)
-            except Exception as e:
-                logger.error("Error detecting arb for match %d: %s", match.id, e)
+            except Exception:
+                logger.exception("Error detecting arb for match %d", match.id)
                 counts["errors"] += 1
 
         # Expire old arbs

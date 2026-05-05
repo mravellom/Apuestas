@@ -84,8 +84,8 @@ class OpportunityDetectionService:
                 )
                 counts["opportunities_found"] += len(found_opps)
                 new_opportunities.extend(found_opps)
-            except Exception as e:
-                logger.error(f"Error detecting for match {match.id}: {e}")
+            except Exception:
+                logger.exception("Error detecting for match %s", match.id)
                 counts["errors"] += 1
 
         # Portfolio sizing del batch completo: agrupa por match, aplica Kelly

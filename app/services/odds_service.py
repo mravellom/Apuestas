@@ -85,13 +85,13 @@ class OddsIngestionService:
                         await self._process_event(db, sport, league_key, event_id, odds_list)
                         counts["events"] += 1
                         counts["odds_saved"] += len(odds_list)
-                    except Exception as e:
-                        logger.error(f"Error processing event {event_id}: {e}")
+                    except Exception:
+                        logger.exception("Error processing event %s", event_id)
                         counts["errors"] += 1
 
                 await db.commit()
-            except Exception as e:
-                logger.error(f"Error fetching odds for {league_key}: {e}")
+            except Exception:
+                logger.exception("Error fetching odds for %s", league_key)
                 counts["errors"] += 1
 
         return counts

@@ -65,8 +65,8 @@ async def send_admin_alert(message: str) -> bool:
             response.text[:200],
         )
         return False
-    except Exception as e:
+    except Exception:
         # Network, DNS, timeout — no hay nada útil que el caller pueda
         # hacer al respecto. Logueamos y seguimos.
-        logger.error("Admin alert exception: %s", e)
+        logger.exception("Admin alert exception")
         return False

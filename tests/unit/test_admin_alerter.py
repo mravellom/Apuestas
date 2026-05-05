@@ -75,7 +75,12 @@ class TestSendAdminAlert:
         # disparó la alerta.
         ok = await admin_alerter.send_admin_alert("urgent")
         assert ok is False
-        assert any("network down" in r.message for r in caplog.records)
+        # logger.exception captura la excepción en exc_info; el stack queda
+        # en los logs aunque el mensaje no incluya la causa.
+        assert any(
+            r.exc_info and "network down" in str(r.exc_info[1])
+            for r in caplog.records
+        )
 
     async def test_returns_false_on_telegram_error_status(self, monkeypatch, caplog):
         monkeypatch.setattr(admin_alerter.settings, "ADMIN_TELEGRAM_CHAT_ID", "1")

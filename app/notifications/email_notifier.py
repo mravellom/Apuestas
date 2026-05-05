@@ -60,8 +60,8 @@ class EmailNotifier(Notifier):
 
             logger.info("Email notification sent to %s", destination)
             return True
-        except Exception as e:
-            logger.error("Failed to send email to %s: %s", destination, e)
+        except Exception:
+            logger.exception("Failed to send email to %s", destination)
             return False
 
     @staticmethod
