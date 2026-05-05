@@ -7,8 +7,10 @@ import pytest
 from app.adapters.odds_api import OddsAPIAdapter
 
 
-def _fake_response(json_data):
+def _fake_response(json_data, status_code: int = 200, headers: dict | None = None):
     resp = MagicMock()
+    resp.status_code = status_code
+    resp.headers = headers or {}
     resp.raise_for_status = MagicMock()
     resp.json = MagicMock(return_value=json_data)
     return resp
@@ -157,3 +159,82 @@ async def test_different_lines_produce_different_parameters():
 
     params = sorted(d.parameter for d in data)
     assert params == [8.5, 9.0]
+
+
+# ── Retry / backoff ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_retries_on_5xx_then_succeeds():
+    """Un 503 transitorio debe reintentar y entregar el resultado del 2do intento."""
+    import httpx
+    adapter = OddsAPIAdapter(api_key="x", base_url="http://test", max_retries=2, backoff_base_seconds=0)
+    err = _fake_response([], status_code=503)
+    err.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError("503", request=MagicMock(), response=err))
+    ok = _fake_response([])
+
+    with patch.object(adapter.client, "get", new=AsyncMock(side_effect=[err, ok])):
+        data = await adapter.fetch_odds("baseball_mlb")
+    assert data == []
+
+
+@pytest.mark.asyncio
+async def test_retries_on_429_respects_retry_after():
+    """En 429 debe reintentar; mockeamos asyncio.sleep para no esperar de verdad."""
+    import httpx
+    adapter = OddsAPIAdapter(api_key="x", base_url="http://test", max_retries=2, backoff_base_seconds=0)
+    rate_limited = _fake_response([], status_code=429, headers={"retry-after": "5"})
+    rate_limited.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError("429", request=MagicMock(), response=rate_limited))
+    ok = _fake_response([])
+
+    with patch("app.adapters.odds_api.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+        with patch.object(adapter.client, "get", new=AsyncMock(side_effect=[rate_limited, ok])):
+            data = await adapter.fetch_odds("baseball_mlb")
+    assert data == []
+    # Debe haber dormido una vez con el retry-after del header (5s)
+    sleep_mock.assert_awaited_once_with(5.0)
+
+
+@pytest.mark.asyncio
+async def test_does_not_retry_on_4xx_other_than_429():
+    """Un 401 (api key inválida) debe levantar inmediatamente, sin retry."""
+    import httpx
+    adapter = OddsAPIAdapter(api_key="bad", base_url="http://test", max_retries=3, backoff_base_seconds=0)
+    unauth = _fake_response([], status_code=401)
+    unauth.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError("401", request=MagicMock(), response=unauth))
+
+    get_mock = AsyncMock(return_value=unauth)
+    with patch.object(adapter.client, "get", new=get_mock):
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.fetch_odds("baseball_mlb")
+    # Solo un intento, sin retries
+    assert get_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retries_on_transport_error_then_succeeds():
+    """Un timeout puntual debe reintentar."""
+    import httpx
+    adapter = OddsAPIAdapter(api_key="x", base_url="http://test", max_retries=2, backoff_base_seconds=0)
+    ok = _fake_response([])
+    side = [httpx.ConnectTimeout("timeout"), ok]
+
+    with patch.object(adapter.client, "get", new=AsyncMock(side_effect=side)):
+        data = await adapter.fetch_odds("baseball_mlb")
+    assert data == []
+
+
+@pytest.mark.asyncio
+async def test_gives_up_after_max_retries():
+    """Si todos los intentos fallan con 5xx, debe levantar."""
+    import httpx
+    adapter = OddsAPIAdapter(api_key="x", base_url="http://test", max_retries=2, backoff_base_seconds=0)
+    err = _fake_response([], status_code=503)
+    err.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError("503", request=MagicMock(), response=err))
+
+    get_mock = AsyncMock(return_value=err)
+    with patch.object(adapter.client, "get", new=get_mock):
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.fetch_odds("baseball_mlb")
+    # 1 inicial + 2 retries = 3 intentos
+    assert get_mock.await_count == 3

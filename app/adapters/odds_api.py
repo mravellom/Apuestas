@@ -1,5 +1,7 @@
 """Adapter para The Odds API v4."""
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -7,6 +9,8 @@ import httpx
 
 from app.adapters.base import DataSourceAdapter, RawOddsData, RawOutcome
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,10 +30,26 @@ def _parse_int_header(headers, key: str) -> int | None:
         return None
 
 
+def _parse_retry_after(headers) -> float | None:
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class OddsAPIAdapter(DataSourceAdapter):
     SOURCE = "odds_api"
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        max_retries: int = 3,
+        backoff_base_seconds: float = 1.0,
+    ):
         self.api_key = api_key or settings.ODDS_API_KEY
         self.base_url = base_url or settings.ODDS_API_BASE_URL
         self.client = httpx.AsyncClient(timeout=30.0)
@@ -40,6 +60,10 @@ class OddsAPIAdapter(DataSourceAdapter):
         }
         # Última lectura de headers de cuota; el caller la persiste.
         self.last_usage: ApiUsageSnapshot | None = None
+        # Retries + backoff exponencial. Por defecto 3 intentos extra (4 total)
+        # con base 1s → 1, 2, 4 segundos. En 429 se respeta Retry-After si llega.
+        self.max_retries = max_retries
+        self.backoff_base_seconds = backoff_base_seconds
 
     def _capture_usage(self, response: httpx.Response, endpoint: str, sport: str | None):
         self.last_usage = ApiUsageSnapshot(
@@ -49,11 +73,67 @@ class OddsAPIAdapter(DataSourceAdapter):
             requests_used=_parse_int_header(response.headers, "x-requests-used"),
         )
 
+    async def _get_with_retry(
+        self, url: str, params: dict, endpoint: str, sport: str | None
+    ) -> httpx.Response:
+        """GET con retry exponencial.
+
+        Reintenta en: errores de transporte (red, DNS, timeout), 5xx, 429.
+        Respeta `Retry-After` en 429. NO reintenta en 4xx (excepto 429) — esos
+        son errores del cliente (api key inválida, sport mal escrito) que no se
+        arreglan repitiendo.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await self.client.get(url, params=params)
+                if response.status_code == 429:
+                    if attempt == self.max_retries:
+                        response.raise_for_status()
+                    delay = _parse_retry_after(response.headers) or (
+                        self.backoff_base_seconds * (2 ** attempt)
+                    )
+                    logger.warning(
+                        "Odds API 429 on %s/%s; sleeping %.1fs (attempt %d/%d)",
+                        endpoint, sport, delay, attempt + 1, self.max_retries + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if response.status_code >= 500:
+                    if attempt == self.max_retries:
+                        response.raise_for_status()
+                    delay = self.backoff_base_seconds * (2 ** attempt)
+                    logger.warning(
+                        "Odds API %d on %s/%s; sleeping %.1fs (attempt %d/%d)",
+                        response.status_code, endpoint, sport, delay,
+                        attempt + 1, self.max_retries + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                response.raise_for_status()
+                return response
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                last_exc = e
+                if attempt == self.max_retries:
+                    raise
+                delay = self.backoff_base_seconds * (2 ** attempt)
+                logger.warning(
+                    "Odds API transport error on %s/%s (%s); sleeping %.1fs (attempt %d/%d)",
+                    endpoint, sport, type(e).__name__, delay,
+                    attempt + 1, self.max_retries + 1,
+                )
+                await asyncio.sleep(delay)
+        # Unreachable: o devolvemos response, o raise dentro del loop.
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("retry loop exited without returning")
+
     async def fetch_events(self, sport: str) -> list[dict]:
         """Obtiene lista de eventos para un deporte."""
         url = f"{self.base_url}/sports/{sport}/events"
-        response = await self.client.get(url, params={"apiKey": self.api_key})
-        response.raise_for_status()
+        response = await self._get_with_retry(
+            url, {"apiKey": self.api_key}, "events", sport
+        )
         self._capture_usage(response, "events", sport)
         return response.json()
 
@@ -82,8 +162,7 @@ class OddsAPIAdapter(DataSourceAdapter):
             "oddsFormat": "decimal",
         }
 
-        response = await self.client.get(url, params=params)
-        response.raise_for_status()
+        response = await self._get_with_retry(url, params, "odds", sport)
         self._capture_usage(response, "odds", sport)
 
         raw_data: list[RawOddsData] = []
