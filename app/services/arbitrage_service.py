@@ -14,7 +14,7 @@ from app.models.arbitrage import ArbitrageOpportunity
 from app.models.bookmaker import Bookmaker
 from app.models.market import Market, Odds, Outcome
 from app.models.match import Match
-from app.models.sport import League, Season
+from app.models.sport import League, Season, Sport
 from app.services.paper_trading_service import PaperTradingService
 
 # Cuotas ≤ este umbral indican que el bookmaker tiene el mercado SUSPENDIDO
@@ -22,6 +22,15 @@ from app.services.paper_trading_service import PaperTradingService
 # de 2 dígitos (ver caso Hawks/Knicks #80). Si CUALQUIER outcome del mercado
 # del libro está bajo este umbral, el libro entero queda fuera.
 SUSPENDED_ODDS_THRESHOLD = 1.05
+
+# Override del min_bookmakers default por sport. Datos 7d (2026-05-05): tennis
+# tiene 7 books observados pero la mayoría de matches solo recibe 4-5 cuotas
+# simultáneas; bajar el umbral a 4 desbloquea ~30 matches/semana sin gastar
+# quota adicional. Para sports estructuralmente "thin" (boxing/mma con 3 books
+# promedio) no tiene sentido bajar más — la varianza del consenso explota.
+DEFAULT_MIN_BOOKMAKERS_PER_SPORT: dict[str, int] = {
+    "tennis": 4,
+}
 
 
 @dataclass
@@ -55,13 +64,27 @@ class ArbitrageDetectionService:
         min_minutes_to_kickoff: int = 15,
         max_minutes_to_kickoff: int = 10080,
         max_odds_age_minutes: int = 30,
+        min_bookmakers_per_sport: dict[str, int] | None = None,
     ):
         self.min_profit_pct = min_profit_pct
         self.min_bookmakers = min_bookmakers
         self.min_minutes_to_kickoff = min_minutes_to_kickoff
         self.max_minutes_to_kickoff = max_minutes_to_kickoff
         self.max_odds_age_minutes = max_odds_age_minutes
+        # Override por sport: {sport_key: int}. Sin entrada → cae a min_bookmakers.
+        # `None` activa el default global (DEFAULT_MIN_BOOKMAKERS_PER_SPORT) —
+        # pasar `{}` desactiva todos los overrides explícitamente.
+        self.min_bookmakers_per_sport = (
+            DEFAULT_MIN_BOOKMAKERS_PER_SPORT
+            if min_bookmakers_per_sport is None
+            else min_bookmakers_per_sport
+        )
         self.paper = PaperTradingService()
+
+    def _min_bookmakers_for(self, sport_key: str | None) -> int:
+        if sport_key and sport_key in self.min_bookmakers_per_sport:
+            return self.min_bookmakers_per_sport[sport_key]
+        return self.min_bookmakers
 
     async def detect_all(
         self, db: AsyncSession
@@ -81,9 +104,10 @@ class ArbitrageDetectionService:
 
         matches = (
             await db.execute(
-                select(Match)
+                select(Match, Sport.key)
                 .join(Season, Match.season_id == Season.id)
                 .join(League, Season.league_id == League.id)
+                .join(Sport, Sport.id == League.sport_id)
                 .where(
                     Match.status == "scheduled",
                     Match.commence_time > min_time,
@@ -91,11 +115,13 @@ class ArbitrageDetectionService:
                     League.detection_enabled.is_(True),
                 )
             )
-        ).scalars().all()
+        ).all()
 
-        for match in matches:
+        for match, sport_key in matches:
             try:
-                found, scanned = await self._detect_for_match(db, match, commission_map)
+                found, scanned = await self._detect_for_match(
+                    db, match, commission_map, sport_key
+                )
                 counts["markets_scanned"] += scanned
                 counts["arbs_found"] += len(found)
                 new_arbs.extend(found)
@@ -111,7 +137,11 @@ class ArbitrageDetectionService:
         return counts, new_arbs
 
     async def _detect_for_match(
-        self, db: AsyncSession, match: Match, commission_map: dict[str, float]
+        self,
+        db: AsyncSession,
+        match: Match,
+        commission_map: dict[str, float],
+        sport_key: str | None = None,
     ) -> tuple[list[ArbitrageOpportunity], int]:
         new_arbs: list[ArbitrageOpportunity] = []
 
@@ -124,7 +154,9 @@ class ArbitrageDetectionService:
         ).scalars().all()
 
         for market in markets:
-            arb = await self._detect_for_market(db, market, commission_map)
+            arb = await self._detect_for_market(
+                db, market, commission_map, sport_key
+            )
             if arb:
                 saved = await self._save_arb(db, arb, market, match)
                 if saved:
@@ -133,7 +165,11 @@ class ArbitrageDetectionService:
         return new_arbs, len(markets)
 
     async def _detect_for_market(
-        self, db: AsyncSession, market: Market, commission_map: dict[str, float]
+        self,
+        db: AsyncSession,
+        market: Market,
+        commission_map: dict[str, float],
+        sport_key: str | None = None,
     ) -> ArbOpportunity | None:
         outcomes = (
             await db.execute(
@@ -154,7 +190,7 @@ class ArbitrageDetectionService:
             outcome_keys=outcome_keys,
             outcome_names=outcome_names,
             min_profit_pct=self.min_profit_pct,
-            min_bookmakers=self.min_bookmakers,
+            min_bookmakers=self._min_bookmakers_for(sport_key),
             commission_by_bookmaker=commission_map,
         )
 

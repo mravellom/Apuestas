@@ -407,6 +407,55 @@ class TestMinBookmakersConfig:
         assert counts["arbs_found"] >= 1
 
 
+class TestMinBookmakersPerSport:
+    async def test_per_sport_override_relaxes_only_target_sport(
+        self, db_session: AsyncSession
+    ):
+        """Override por sport (football=3) detecta arb donde global=5 lo descartaría."""
+        commence = datetime.now(timezone.utc) + timedelta(days=1)
+        await seed_database(db_session)
+        data = [
+            raw("OvA", "OvB", "bet365",
+                [("OvA", 2.60), ("Draw", 3.10), ("OvB", 3.20)], commence),
+            raw("OvA", "OvB", "pinnacle",
+                [("OvA", 2.00), ("Draw", 3.80), ("OvB", 3.20)], commence),
+            raw("OvA", "OvB", "betfair_ex_eu",
+                [("OvA", 2.00), ("Draw", 3.10), ("OvB", 4.20)], commence),
+        ]
+        await OddsIngestionService(FakeAdapter(data)).ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_spain_la_liga"]
+        )
+
+        # Default 5, pero override football=3 → detecta
+        svc = ArbitrageDetectionService(
+            min_bookmakers=5,
+            min_bookmakers_per_sport={"football": 3},
+        )
+        counts, _ = await svc.detect_all(db_session)
+        assert counts["arbs_found"] >= 1
+
+    async def test_default_overrides_apply_tennis_4(
+        self, db_session: AsyncSession
+    ):
+        """Sin pasar min_bookmakers_per_sport, el default DEFAULT_MIN_BOOKMAKERS_PER_SPORT
+        aplica: tennis baja a 4 implícitamente."""
+        from app.services.arbitrage_service import DEFAULT_MIN_BOOKMAKERS_PER_SPORT
+
+        svc = ArbitrageDetectionService(min_bookmakers=5)
+        # Tennis usa 4 vía default
+        assert svc._min_bookmakers_for("tennis") == 4
+        # Football no está en el default → cae al global
+        assert svc._min_bookmakers_for("football") == 5
+        assert "tennis" in DEFAULT_MIN_BOOKMAKERS_PER_SPORT
+
+    async def test_explicit_empty_dict_disables_defaults(self):
+        """Pasar {} desactiva todos los overrides (escape hatch para tests/runs especiales)."""
+        svc = ArbitrageDetectionService(
+            min_bookmakers=5, min_bookmakers_per_sport={}
+        )
+        assert svc._min_bookmakers_for("tennis") == 5  # default global
+
+
 class TestSuspendedOddsFilter:
     """
     Reproduce el patrón del falso positivo del arb #80 (Hawks/Knicks, abr 2026):
