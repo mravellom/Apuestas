@@ -48,6 +48,7 @@ export type SportActivity = Schemas["SportActivity"];
 export type LeagueArbCount = Schemas["LeagueArbCount"];
 export type BookCount = Schemas["BookCount"];
 export type ApiUsageSummary = Schemas["ApiUsageSummary"];
+export type HourBucket = Schemas["HourBucket"];
 
 // ── Admin / Leagues ───────────────────────────────────────────────────────
 export type AdminLeague = Schemas["app__api__v1__admin__LeagueResponse"];

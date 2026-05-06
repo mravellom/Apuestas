@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
 import { sportAccentColor } from "@/lib/sportColors";
-import type { AdminLeague, DashboardSummary } from "@/lib/types";
+import type { AdminLeague, DashboardSummary, HourBucket } from "@/lib/types";
 
 const WINDOW_PRESETS: { label: string; days: number }[] = [
   { label: "1d", days: 1 },
@@ -143,6 +143,20 @@ export default function DashboardPage() {
                 subtitle="Conteo de oportunidades emitidas"
                 items={data.top_books_valuebets}
                 accent="#06b6d4"
+              />
+            </div>
+            <div className="grid gap-6 lg:grid-cols-2">
+              <HourDistributionCard
+                title="Arbitrajes por hora"
+                subtitle="Hora de detección (CLT, America/Santiago)"
+                buckets={data.arbs_by_hour_clt}
+                color="#22c55e"
+              />
+              <HourDistributionCard
+                title="Value bets por hora"
+                subtitle="Hora de detección (CLT, America/Santiago)"
+                buckets={data.valuebets_by_hour_clt}
+                color="#06b6d4"
               />
             </div>
             <p className="text-right text-xs text-muted">
@@ -521,6 +535,77 @@ function ApiUsageItem({
         </div>
       ) : null}
     </div>
+  );
+}
+
+// ── Hour distribution chart (barras verticales custom) ────────────────────
+function HourDistributionCard({
+  title,
+  subtitle,
+  buckets,
+  color,
+}: {
+  title: string;
+  subtitle: string;
+  buckets: HourBucket[];
+  color: string;
+}) {
+  const max = Math.max(1, ...buckets.map((b) => b.count));
+  const total = buckets.reduce((s, b) => s + b.count, 0);
+  const peak = buckets.reduce((p, b) => (b.count > p.count ? b : p), buckets[0]);
+
+  return (
+    <section className="rounded-lg border border-border bg-surface p-5">
+      <h2 className="mb-1 text-lg font-semibold text-white">{title}</h2>
+      <p className="mb-4 text-xs text-muted">{subtitle}</p>
+      {total === 0 ? (
+        <div className="text-sm text-muted">Sin datos en la ventana.</div>
+      ) : (
+        <>
+          <div className="flex items-end gap-[2px] h-32" role="img" aria-label={title}>
+            {buckets.map((b) => {
+              const heightPct = max > 0 ? (b.count / max) * 100 : 0;
+              const isPeak = b.hour === peak.hour && b.count > 0;
+              return (
+                <div
+                  key={b.hour}
+                  className="flex-1 flex flex-col justify-end"
+                  title={`${String(b.hour).padStart(2, "0")}:00 — ${b.count}`}
+                >
+                  <div
+                    className="rounded-sm transition-all"
+                    style={{
+                      height: `${Math.max(heightPct, b.count > 0 ? 3 : 0)}%`,
+                      backgroundColor: isPeak ? color : `${color}99`,
+                      minHeight: b.count > 0 ? "2px" : "0",
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-1 flex justify-between text-[10px] text-muted font-mono">
+            <span>00</span>
+            <span>06</span>
+            <span>12</span>
+            <span>18</span>
+            <span>23</span>
+          </div>
+          <div className="mt-3 flex justify-between text-xs text-muted">
+            <span>
+              Total <span className="font-mono text-white">{total}</span>
+            </span>
+            <span>
+              Pico{" "}
+              <span className="font-mono" style={{ color }}>
+                {String(peak.hour).padStart(2, "0")}:00
+              </span>{" "}
+              ({peak.count})
+            </span>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

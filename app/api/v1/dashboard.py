@@ -53,6 +53,12 @@ class ApiUsageSummary(BaseModel):
     calls_7d: int
 
 
+class HourBucket(BaseModel):
+    """Conteo agregado por hora del día (0-23) en horario chileno (America/Santiago)."""
+    hour: int  # 0..23
+    count: int
+
+
 class DashboardSummary(BaseModel):
     window_days: int
     generated_at: str
@@ -61,6 +67,8 @@ class DashboardSummary(BaseModel):
     top_books_arbs: list[BookCount]
     top_books_valuebets: list[BookCount]
     api_usage: list[ApiUsageSummary]
+    arbs_by_hour_clt: list[HourBucket]
+    valuebets_by_hour_clt: list[HourBucket]
 
 
 @router.get("/summary", response_model=DashboardSummary)
@@ -265,6 +273,39 @@ async def dashboard_summary(
             )
         )
 
+    # 6) Distribución horaria en horario chileno (America/Santiago).
+    # Agregado en Python (no en SQL) para portabilidad: SQLite no tiene
+    # `timezone()` y los volúmenes actuales (cientos de filas/ventana) no
+    # justifican un path Postgres-only. zoneinfo respeta DST automáticamente
+    # — CLT pasa entre UTC-4 y UTC-3 según la fecha.
+    from zoneinfo import ZoneInfo
+    chile_tz = ZoneInfo("America/Santiago")
+    utc_tz = timezone.utc
+
+    def _bucketize(rows: list[datetime]) -> list[HourBucket]:
+        counts = [0] * 24
+        for dt in rows:
+            # detected_at es TIMESTAMP WITHOUT TZ pero guardado como UTC naive
+            chile_dt = dt.replace(tzinfo=utc_tz).astimezone(chile_tz)
+            counts[chile_dt.hour] += 1
+        return [HourBucket(hour=h, count=c) for h, c in enumerate(counts)]
+
+    arb_dts = (
+        await db.execute(
+            select(ArbitrageOpportunity.detected_at)
+            .where(ArbitrageOpportunity.detected_at >= cutoff)
+        )
+    ).scalars().all()
+    arbs_by_hour_clt = _bucketize(arb_dts)
+
+    vb_dts = (
+        await db.execute(
+            select(Opportunity.detected_at)
+            .where(Opportunity.detected_at >= cutoff)
+        )
+    ).scalars().all()
+    valuebets_by_hour_clt = _bucketize(vb_dts)
+
     return DashboardSummary(
         window_days=window_days,
         generated_at=now.strftime("%Y-%m-%d %H:%M UTC"),
@@ -273,4 +314,6 @@ async def dashboard_summary(
         top_books_arbs=top_books_arbs,
         top_books_valuebets=top_books_vb,
         api_usage=api_usage_list,
+        arbs_by_hour_clt=arbs_by_hour_clt,
+        valuebets_by_hour_clt=valuebets_by_hour_clt,
     )

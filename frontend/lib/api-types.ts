@@ -1140,6 +1140,10 @@ export interface components {
             top_books_valuebets: components["schemas"]["BookCount"][];
             /** Api Usage */
             api_usage: components["schemas"]["ApiUsageSummary"][];
+            /** Arbs By Hour Clt */
+            arbs_by_hour_clt: components["schemas"]["HourBucket"][];
+            /** Valuebets By Hour Clt */
+            valuebets_by_hour_clt: components["schemas"]["HourBucket"][];
         };
         /** ExecuteArbitrageRequest */
         ExecuteArbitrageRequest: {
@@ -1201,6 +1205,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HourBucket
+         * @description Conteo agregado por hora del día (0-23) en horario chileno (America/Santiago).
+         */
+        HourBucket: {
+            /** Hour */
+            hour: number;
+            /** Count */
+            count: number;
         };
         /** LeagueArbCount */
         LeagueArbCount: {

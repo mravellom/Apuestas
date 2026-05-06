@@ -79,6 +79,38 @@ class TestDashboardSummary:
         )
         assert bad_high.status_code == 422
 
+    async def test_hourly_distribution_in_chilean_time(
+        self, client, auth_headers, db_session
+    ):
+        """24 buckets de horas en CLT con conteos reales convertidos desde UTC."""
+        await _seed_arbitrage(db_session)
+        # Forzar el detected_at del arb a 03:00 UTC = 23:00 CLT (UTC-4) o
+        # 00:00 CLT (UTC-3 con DST). Usamos enero (CLST UTC-3) para predecibilidad.
+        from app.models.arbitrage import ArbitrageOpportunity
+        from sqlalchemy import select
+
+        arb = (await db_session.execute(select(ArbitrageOpportunity))).scalar_one()
+        arb.detected_at = datetime(2026, 1, 15, 3, 0, 0)  # 00:00 CLST (UTC-3)
+        await db_session.commit()
+
+        resp = await client.get(
+            "/api/v1/dashboard/summary?window_days=365", headers=auth_headers
+        )
+        body = resp.json()
+
+        # 24 buckets, todos representados (relleno con 0)
+        assert len(body["arbs_by_hour_clt"]) == 24
+        assert {b["hour"] for b in body["arbs_by_hour_clt"]} == set(range(24))
+        # El arb a 03:00 UTC (enero) = 00:00 CLT
+        bucket_0 = next(b for b in body["arbs_by_hour_clt"] if b["hour"] == 0)
+        assert bucket_0["count"] == 1
+        # Total debe coincidir con cantidad de arbs
+        assert sum(b["count"] for b in body["arbs_by_hour_clt"]) == 1
+
+        # Value bets: misma estructura, en este escenario sin opportunities → 0
+        assert len(body["valuebets_by_hour_clt"]) == 24
+        assert sum(b["count"] for b in body["valuebets_by_hour_clt"]) == 0
+
     async def test_api_usage_reflects_persisted_logs(
         self, client, auth_headers, db_session
     ):
