@@ -440,12 +440,14 @@ class ArbitrageDetectionService:
 
         current_pct = (1.0 / effective_implied_sum - 1.0) * 100.0
 
-        # Normaliza stake_pct para que sumen 1 (con absorción del residuo en
-        # el último leg — ver fix de bug #7 en detect_arbitrage).
+        # Normaliza stake_pct para que sumen 1 (residuo repartido uniformemente
+        # entre legs — ver fix de bug #7 en detect_arbitrage).
         for leg_d in repriced:
             leg_d["stake_pct"] = leg_d["stake_pct"] / effective_implied_sum
         residual = 1.0 - sum(leg_d["stake_pct"] for leg_d in repriced)
-        repriced[-1]["stake_pct"] += residual
+        per_leg = residual / len(repriced)
+        for leg_d in repriced:
+            leg_d["stake_pct"] += per_leg
 
         # Clasificación relativa al profit original detectado.
         ratio = current_pct / detected_pct if detected_pct > 0 else 0
@@ -646,7 +648,11 @@ class ArbitrageDetectionService:
     async def sweep_dead_arbs(self, db: AsyncSession) -> int:
         """
         Revalida cada arb `active` con kickoff aún en el futuro y persiste
-        `status='dead'` cuando la revalidación así lo indica.
+        `status='dead'` cuando la revalidación así lo indica. Además persiste
+        un snapshot (`last_revalidate_*`) en TODOS los arbs revalidados —
+        muertos o vivos — para que el frontend distinga "alive sin revalidar
+        hace rato" vs "alive recién confirmado" sin llamar /revalidate fila
+        por fila.
 
         Cierra la brecha entre `_expire_arbs` (que solo vence por kickoff) y
         `revalidate_arb` (read-only): opps que siguen pre-kickoff pero cuyas
@@ -664,18 +670,26 @@ class ArbitrageDetectionService:
         ).scalars().all()
 
         killed = 0
+        touched = 0
         for arb_id in rows:
             try:
                 result = await self.revalidate_arb(db, arb_id)
             except ValueError:
                 continue
-            if result.status == "dead":
-                arb = await db.get(ArbitrageOpportunity, arb_id)
-                if arb is not None and arb.status == "active":
-                    arb.status = "dead"
-                    arb.closed_at = now
-                    killed += 1
 
-        if killed:
+            arb = await db.get(ArbitrageOpportunity, arb_id)
+            if arb is None:
+                continue
+            arb.last_revalidate_at = now
+            arb.last_revalidate_status = result.status
+            arb.last_revalidate_profit_pct = Decimal(str(result.current_profit_pct))
+            touched += 1
+
+            if result.status == "dead" and arb.status == "active":
+                arb.status = "dead"
+                arb.closed_at = now
+                killed += 1
+
+        if touched:
             await db.commit()
         return killed

@@ -55,6 +55,9 @@ class ArbResponse(BaseModel):
     legs: list[ArbLegResponse]
     status: ArbStatus
     detected_at: str
+    last_revalidate_at: str | None = None
+    last_revalidate_status: RevalidationStatus | None = None
+    last_revalidate_profit_pct: float | None = None
 
 
 class ArbHistoryItem(BaseModel):
@@ -115,6 +118,15 @@ async def list_arbitrage(
             legs=arb.legs,
             status=arb.status,
             detected_at=arb.detected_at.strftime("%Y-%m-%d %H:%M UTC"),
+            last_revalidate_at=(
+                arb.last_revalidate_at.strftime("%Y-%m-%d %H:%M UTC")
+                if arb.last_revalidate_at else None
+            ),
+            last_revalidate_status=arb.last_revalidate_status,
+            last_revalidate_profit_pct=(
+                float(arb.last_revalidate_profit_pct)
+                if arb.last_revalidate_profit_pct is not None else None
+            ),
         ))
 
     return response
@@ -181,6 +193,97 @@ async def arbitrage_history(
         ))
 
     return response
+
+
+class ArbQualityResponse(BaseModel):
+    """
+    Métricas agregadas para distinguir señal vs ruido en una ventana de tiempo.
+
+    - total: arbs detectados en la ventana.
+    - over_5min: arbs que vivieron >5min (cerraron tras 5min o siguen activos);
+      proxy de "ejecutable manualmente". Arbs que mueren en <5min suelen ser
+      palp errors corregidos antes de que un humano pueda colocar la apuesta.
+    - outliers: arbs con profit_pct >= outlier_threshold (default 10%). El
+      histórico muestra que ≥10% es casi siempre palp error.
+    - signal_ratio: (total - outliers) / total. 1.0 = sin ruido.
+    - paper_settled_units: suma de profit_units de paper_bets de tipo
+      arbitrage en la misma ventana (positivo = el detector tiene edge).
+    """
+    window_days: int
+    total: int
+    over_5min: int
+    outliers: int
+    signal_ratio: float
+    paper_settled_bets: int
+    paper_settled_units: float
+
+
+@router.get("/quality", response_model=ArbQualityResponse)
+async def arbitrage_quality(
+    window_days: int = Query(30, ge=1, le=180),
+    outlier_threshold_pct: float = Query(10.0, ge=1.0),
+    min_lifetime_minutes: int = Query(5, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Métricas de calidad del detector de arbs. Separa volumen (todo lo que
+    encontramos) de señal (lo que probablemente era ejecutable).
+    """
+    from sqlalchemy import func
+
+    cutoff = datetime.utcnow() - timedelta(days=window_days)
+
+    # Vida útil: closed_at - detected_at para cerrados; NOW() - detected_at
+    # para los activos (siguen vivos, así que ya >= su edad actual).
+    lifetime_minutes = (
+        func.extract(
+            "epoch",
+            func.coalesce(ArbitrageOpportunity.closed_at, func.now())
+            - ArbitrageOpportunity.detected_at,
+        )
+        / 60.0
+    )
+
+    row = (
+        await db.execute(
+            select(
+                func.count().label("total"),
+                func.count().filter(lifetime_minutes >= min_lifetime_minutes).label("over_5min"),
+                func.count().filter(
+                    ArbitrageOpportunity.profit_pct >= outlier_threshold_pct
+                ).label("outliers"),
+            ).where(ArbitrageOpportunity.detected_at >= cutoff)
+        )
+    ).one()
+
+    from app.models.paper import PaperBet
+
+    paper_row = (
+        await db.execute(
+            select(
+                func.count().label("settled"),
+                func.coalesce(func.sum(PaperBet.profit_units), 0).label("units"),
+            ).where(
+                PaperBet.source_type == "arbitrage",
+                PaperBet.placed_at >= cutoff,
+                PaperBet.result.in_(("won", "lost")),
+            )
+        )
+    ).one()
+
+    total = int(row.total or 0)
+    outliers = int(row.outliers or 0)
+    signal_ratio = (total - outliers) / total if total > 0 else 0.0
+
+    return ArbQualityResponse(
+        window_days=window_days,
+        total=total,
+        over_5min=int(row.over_5min or 0),
+        outliers=outliers,
+        signal_ratio=round(signal_ratio, 4),
+        paper_settled_bets=int(paper_row.settled or 0),
+        paper_settled_units=float(paper_row.units or 0),
+    )
 
 
 @router.get("/{arb_id}/revalidate", response_model=RevalidationResponse)

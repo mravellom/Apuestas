@@ -29,6 +29,12 @@ class ArbitrageOpportunity(Base):
     detected_at: Mapped[datetime] = mapped_column(server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column()
     closed_at: Mapped[datetime | None] = mapped_column()
+    # Snapshot del último sweep_dead_arbs sobre este arb. Permite al frontend
+    # distinguir "alive sin revalidar en N min" vs "alive recién revalidado"
+    # sin pegarle al endpoint /revalidate por cada fila.
+    last_revalidate_at: Mapped[datetime | None] = mapped_column()
+    last_revalidate_status: Mapped[str | None] = mapped_column(String(20))
+    last_revalidate_profit_pct: Mapped[Decimal | None] = mapped_column(Numeric(6, 3))
 
     match: Mapped["Match"] = relationship()
     market: Mapped["Market"] = relationship()

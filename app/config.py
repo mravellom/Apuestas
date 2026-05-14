@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # se modula adentro del job según proximidad del próximo partido.
     SCHEDULER_FETCH_ODDS_SECONDS: int = 5 * 60
     SCHEDULER_DETECT_SECONDS: int = 15 * 60
+    # Detección de arbitraje en cadencia separada (más agresiva). Los arbs de
+    # ≥5% profit_pct viven ~30min en promedio (la mayoría son palp errors
+    # corregidos rápido por el libro); con detect a 15min se pierde el 47%
+    # de su vida útil antes de mostrarlos al usuario. No toca la API externa
+    # — solo CPU local sobre las cuotas ya ingestadas.
+    SCHEDULER_DETECT_ARBITRAGE_SECONDS: int = 5 * 60
     SCHEDULER_SCORES_SECONDS: int = 30 * 60
     # Franja horaria UTC en la que fetch_odds se salta la llamada externa para
     # ahorrar créditos. `start` inclusivo, `end` exclusivo, con wraparound si

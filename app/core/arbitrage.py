@@ -20,10 +20,10 @@ Nunca usar `Decimal(float_value)` directamente.
 # Normalización de stake_pct (bug #7)
 
 Los `stake_pct` se computan como fracciones que idealmente suman 1.0, pero
-el redondeo de float puede dar 0.99999... o 1.00001. El último leg absorbe
-el residuo para que `sum(stake_pct) == 1.0` exacto. Sin esto, ejecutar el
-arb deja unos centavos sin asignar o los sobrestakea, invalidando
-marginalmente el balance del surebet.
+el redondeo de float puede dar 0.99999... o 1.00001. El residuo se reparte
+uniformemente entre todos los legs para que `sum(stake_pct) == 1.0` exacto.
+Sin esto, ejecutar el arb deja unos centavos sin asignar o los sobrestakea,
+invalidando marginalmente el balance del surebet.
 """
 
 from dataclasses import dataclass, field
@@ -135,11 +135,14 @@ def detect_arbitrage(
         (1.0 / eff_odds) / total_implied for eff_odds, _ in effective_best
     ]
 
-    # Paso 2: absorción del residuo de redondeo float en el último leg (bug #7).
-    # Sin esto, sum(stake_pct) puede ser 0.9999... o 1.0001, haciendo que al
+    # Paso 2: reparto uniforme del residuo de redondeo float (bug #7). Sin
+    # esto, sum(stake_pct) puede ser 0.9999... o 1.0001, haciendo que al
     # stakear con capital real queden centavos flotando o sobre-stakeados.
+    # Repartir entre todos los legs evita el sesgo de presentación de
+    # cargarle todo al último leg (que depende del orden de outcome_keys).
     residual = 1.0 - sum(raw_stake_pcts)
-    raw_stake_pcts[-1] += residual
+    per_leg = residual / len(raw_stake_pcts)
+    raw_stake_pcts = [p + per_leg for p in raw_stake_pcts]
 
     legs = []
     for i, ((odds, bk_key), (eff_odds, _)) in enumerate(zip(best, effective_best)):

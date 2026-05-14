@@ -47,11 +47,12 @@ def configure_scheduler():
     else:
         logger.info("Value detection disabled via VALUE_DETECTION_ENABLED=false")
 
-    # Detect arbitrage (surebets)
+    # Detect arbitrage (surebets) — cadencia más agresiva que value detection:
+    # los arbs jugosos viven minutos, no horas, y el job es CPU-only (no API).
     scheduler.add_job(
         detect_arbitrage_job,
         "interval",
-        seconds=settings.SCHEDULER_DETECT_SECONDS,
+        seconds=settings.SCHEDULER_DETECT_ARBITRAGE_SECONDS,
         id="detect_arbitrage",
         name="Detect arbitrage opportunities",
         replace_existing=True,
