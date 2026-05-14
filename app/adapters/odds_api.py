@@ -43,6 +43,12 @@ def _parse_retry_after(headers) -> float | None:
 class OddsAPIAdapter(DataSourceAdapter):
     SOURCE = "odds_api"
 
+    # Mapeo de market keys "alternate_*" → base. Ver comentario en fetch_odds.
+    _ALT_TO_BASE = {
+        "alternate_totals": "totals",
+        "alternate_spreads": "spreads",
+    }
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -175,6 +181,15 @@ class OddsAPIAdapter(DataSourceAdapter):
                 if self.allowed_bookmakers and bookmaker["key"].lower() not in self.allowed_bookmakers:
                     continue
                 for market in bookmaker.get("markets", []):
+                    # `alternate_totals` / `alternate_spreads` son endpoints
+                    # distintos en The Odds API pero matemáticamente representan
+                    # el mismo mercado que `totals`/`spreads` con otra línea.
+                    # Normalizar al market_type base hace que un over 7.5 del
+                    # endpoint default de un libro matchee con over 7.5 del
+                    # endpoint alt de otro libro en el mismo `Market` (PK
+                    # = match + market_type + parameter). Si no normalizamos,
+                    # quedarían fracturados en dos rows de Market.
+                    market_key = self._ALT_TO_BASE.get(market["key"], market["key"])
                     outcomes_raw = market.get("outcomes", [])
                     outcomes = [
                         RawOutcome(
@@ -205,7 +220,7 @@ class OddsAPIAdapter(DataSourceAdapter):
                             away_team=event["away_team"],
                             commence_time=commence_time,
                             bookmaker=bookmaker["key"],
-                            market_type=market["key"],
+                            market_type=market_key,
                             outcomes=outcomes,
                             parameter=line,
                             external_id=event.get("id"),

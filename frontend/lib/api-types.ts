@@ -426,6 +426,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/performance/daily-deployment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Daily Deployment
+         * @description Capital desplegado en bet_tracking por día (CLT) vs banca actual.
+         */
+        get: operations["get_daily_deployment_api_v1_performance_daily_deployment_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/alerts/config": {
         parameters: {
             query?: never;
@@ -1084,6 +1104,63 @@ export interface components {
             by_bookmaker: {
                 [key: string]: components["schemas"]["CLVBreakdown"];
             };
+        };
+        /** DailyDeploymentResponse */
+        DailyDeploymentResponse: {
+            /** Window Days */
+            window_days: number;
+            /** Generated At */
+            generated_at: string;
+            summary: components["schemas"]["DailyDeploymentSummary"];
+            /** Rows */
+            rows: components["schemas"]["DailyDeploymentRow"][];
+        };
+        /** DailyDeploymentRow */
+        DailyDeploymentRow: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Num Bets */
+            num_bets: number;
+            /** Num Arbs */
+            num_arbs: number;
+            /** Total Stake */
+            total_stake: number;
+            /** Settled Stake */
+            settled_stake: number;
+            /** Realized Profit */
+            realized_profit: number;
+            /** Settled Bets */
+            settled_bets: number;
+            /** Pending Bets */
+            pending_bets: number;
+            /** Theoretical Edge Avg Pct */
+            theoretical_edge_avg_pct: number | null;
+            /** Realized Roi Pct */
+            realized_roi_pct: number | null;
+            /** Utilization Pct */
+            utilization_pct: number | null;
+        };
+        /** DailyDeploymentSummary */
+        DailyDeploymentSummary: {
+            /** Bankroll Total */
+            bankroll_total: number;
+            /** Bankroll Currency */
+            bankroll_currency: string | null;
+            /** Avg Utilization Pct */
+            avg_utilization_pct: number;
+            /** Avg Theoretical Edge Pct */
+            avg_theoretical_edge_pct: number | null;
+            /** Realized Roi Pct */
+            realized_roi_pct: number | null;
+            /** Total Stake Period */
+            total_stake_period: number;
+            /** Total Realized Profit */
+            total_realized_profit: number;
+            /** Days With Activity */
+            days_with_activity: number;
         };
         /** DailyPlanResponse */
         DailyPlanResponse: {
@@ -2640,6 +2717,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PerformanceSummary"];
+                };
+            };
+        };
+    };
+    get_daily_deployment_api_v1_performance_daily_deployment_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyDeploymentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

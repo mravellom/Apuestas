@@ -55,7 +55,7 @@ async def _seed_match(db: AsyncSession):
     await OddsIngestionService(_FakeAdapter(data)).ingest_odds(
         db, sport_key="football", league_keys=["soccer_spain_la_liga"]
     )
-    outcome = (await db.execute(select(Outcome).where(Outcome.key == "sh"))).scalar_one()
+    outcome = (await db.execute(select(Outcome).where(Outcome.key == "home"))).scalar_one()
     return outcome
 
 

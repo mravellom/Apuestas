@@ -103,6 +103,62 @@ async def test_unknown_bookmaker_skipped_not_autocreated(db_session, caplog):
 
 
 @pytest.mark.asyncio
+async def test_spreads_outcome_key_uses_home_away_not_team_name(db_session):
+    """Dos libros con nombres distintos del MISMO equipo deben colapsar en
+    un único par de outcomes (`home`/`away`) dentro del mismo Market.
+
+    Sin esta normalización, `"Boston Red Sox"` y `"Red Sox"` crearían dos
+    outcomes distintos en el Market(spreads, parameter=1.5) — el detector
+    de arbitraje vería 4+ outcomes en lugar de 2 y fallaría silenciosamente.
+    """
+    await _min_setup(db_session, league_key="baseball_mlb")
+    # Override sport para que se llame baseball, market type spreads.
+    from sqlalchemy import update
+
+    from app.models.sport import Sport
+    await db_session.execute(
+        update(Sport).where(Sport.key == "football").values(key="baseball")
+    )
+    db_session.add(MarketType(key="spreads", name="Spread"))
+    db_session.add(Bookmaker(key="bet365", name="Bet365", is_sharp=False, active=True))
+    await db_session.commit()
+
+    commence = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5)
+    raw = [
+        # Pinnacle usa el nombre completo
+        RawOddsData(
+            source="test", sport_key="baseball", league_key="baseball_mlb",
+            home_team="Boston Red Sox", away_team="New York Yankees",
+            commence_time=commence, bookmaker="pinnacle", market_type="spreads",
+            outcomes=[
+                RawOutcome(name="Boston Red Sox", price=2.10, point=-1.5),
+                RawOutcome(name="New York Yankees", price=1.80, point=1.5),
+            ],
+            parameter=1.5, external_id="evt-1",
+        ),
+        # Bet365 usa la versión corta del nombre — debe mapear al mismo home/away
+        RawOddsData(
+            source="test", sport_key="baseball", league_key="baseball_mlb",
+            home_team="Boston Red Sox", away_team="New York Yankees",
+            commence_time=commence, bookmaker="bet365", market_type="spreads",
+            outcomes=[
+                RawOutcome(name="Red Sox", price=2.05, point=-1.5),
+                RawOutcome(name="Yankees", price=1.85, point=1.5),
+            ],
+            parameter=1.5, external_id="evt-1",
+        ),
+    ]
+
+    service = OddsIngestionService(_StubAdapter(raw), TeamNormalizer())
+    await service.ingest_odds(db_session, sport_key="baseball", league_keys=["baseball_mlb"])
+
+    outcomes = (await db_session.execute(select(Outcome))).scalars().all()
+    keys = sorted(o.key for o in outcomes)
+    # Esperado: exactamente "home" y "away", sin variantes por nombre de equipo
+    assert keys == ["away", "home"], f"got {keys}"
+
+
+@pytest.mark.asyncio
 async def test_inactive_bookmaker_not_used_in_ingestion(db_session):
     """Un bookmaker con active=False (ej. fantasma deshabilitado) no debe recibir odds nuevos."""
     await _min_setup(db_session)

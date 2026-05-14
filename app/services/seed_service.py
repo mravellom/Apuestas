@@ -133,6 +133,8 @@ BROKERS = [
 BOOKMAKER_BROKER_MAP = {
     "pinnacle": "sportmarket",
     "matchbook": "sportmarket",
+    "sbobet": "sportmarket",
+    "ibcbet": "sportmarket",
 }
 
 BOOKMAKERS = [
@@ -140,6 +142,12 @@ BOOKMAKERS = [
     {"key": "pinnacle", "name": "Pinnacle", "is_sharp": True},
     {"key": "betfair_ex_eu", "name": "Betfair Exchange", "is_sharp": True},
     {"key": "matchbook", "name": "Matchbook", "is_sharp": True},
+    # SBObet / IBC — sharps asiáticos accesibles vía SportMarket. Línea
+    # asiática (handicap/totals) referencia mundial junto con Pinnacle.
+    # The Odds API rara vez los cotiza (regions=au ocasional); fuente
+    # principal será adapter SportMarket (roadmap (3)).
+    {"key": "sbobet", "name": "SBObet", "is_sharp": True},
+    {"key": "ibcbet", "name": "IBCbet", "is_sharp": True},
     # Soft books EU/UK
     {"key": "bet365", "name": "Bet365", "is_sharp": False},
     {"key": "williamhill", "name": "William Hill", "is_sharp": False},

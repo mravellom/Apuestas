@@ -161,7 +161,12 @@ class OddsIngestionService:
 
         # Save each outcome + odds
         for raw_outcome in rod.outcomes:
-            outcome_key = self._normalize_outcome_key(raw_outcome.name, rod.market_type)
+            outcome_key = self._normalize_outcome_key(
+                raw_outcome.name,
+                rod.market_type,
+                home_team_name=rod.home_team,
+                away_team_name=rod.away_team,
+            )
             outcome = await self._get_or_create_outcome(
                 db, market.id, outcome_key, raw_outcome.name
             )
@@ -286,19 +291,39 @@ class OddsIngestionService:
         return outcome
 
     @staticmethod
-    def _normalize_outcome_key(name: str, market_type: str) -> str:
-        """Normaliza el nombre del outcome a una key estándar."""
+    def _normalize_outcome_key(
+        name: str,
+        market_type: str,
+        home_team_name: str | None = None,
+        away_team_name: str | None = None,
+    ) -> str:
+        """Normaliza el nombre del outcome a una key estándar.
+
+        Para `h2h` y `spreads` el outcome viene como nombre de equipo, y
+        distintos libros usan distintas variantes ("Boston Red Sox" vs
+        "Red Sox" vs "Boston"). Si recibimos `home_team_name`/`away_team_name`
+        del evento, mapeamos a las keys canónicas `home`/`away`. Sin esto
+        cada variante crea un Outcome row distinto en el mismo Market →
+        el detector de arbitraje nunca encuentra dos legs comparables.
+
+        Fallback: si no hay contexto o el matching es ambiguo, se mantiene
+        el comportamiento anterior (key = nombre del equipo en snake_case).
+        """
         name_lower = name.lower().strip()
         if market_type == "h2h":
             if name_lower == "draw":
                 return "draw"
-            # For h2h, first outcome is typically home, last is away
-            # But The Odds API uses team names, so we keep them as-is
+            side = TeamNormalizer.resolve_side(name, home_team_name, away_team_name)
+            if side is not None:
+                return side
             return name_lower.replace(" ", "_")
         elif market_type == "totals":
             if "over" in name_lower:
                 return "over"
             return "under"
         elif market_type == "spreads":
+            side = TeamNormalizer.resolve_side(name, home_team_name, away_team_name)
+            if side is not None:
+                return side
             return name_lower.replace(" ", "_")
         return name_lower.replace(" ", "_")

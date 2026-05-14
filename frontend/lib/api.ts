@@ -11,6 +11,7 @@ import type {
   BetResult,
   BetStatus,
   CurrentUser,
+  DailyDeployment,
   DailyPlan,
   DashboardSummary,
   ExecutionPlan,
@@ -87,6 +88,14 @@ export async function getDashboardSummary(
 ): Promise<DashboardSummary> {
   return request<DashboardSummary>(
     `/api/v1/dashboard/summary?window_days=${windowDays}`,
+  );
+}
+
+export async function getDailyDeployment(
+  days: number = 30,
+): Promise<DailyDeployment> {
+  return request<DailyDeployment>(
+    `/api/v1/performance/daily-deployment?days=${days}`,
   );
 }
 

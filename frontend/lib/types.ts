@@ -50,6 +50,11 @@ export type BookCount = Schemas["BookCount"];
 export type ApiUsageSummary = Schemas["ApiUsageSummary"];
 export type HourBucket = Schemas["HourBucket"];
 
+// ── Performance / daily deployment ────────────────────────────────────────
+export type DailyDeployment = Schemas["DailyDeploymentResponse"];
+export type DailyDeploymentRow = Schemas["DailyDeploymentRow"];
+export type DailyDeploymentSummary = Schemas["DailyDeploymentSummary"];
+
 // ── Admin / Leagues ───────────────────────────────────────────────────────
 export type AdminLeague = Schemas["app__api__v1__admin__LeagueResponse"];
 

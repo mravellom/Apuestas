@@ -84,7 +84,7 @@ class TestPaperCLV:
         outcomes, books = await _seed_two_books(db_session)
         from app.models.match import Match
         match = (await db_session.execute(select(Match))).scalar_one()
-        ch = next(o for o in outcomes if o.key == "ch")
+        ch = next(o for o in outcomes if o.key == "home")
 
         # 3 bets con CLV, 1 sin closing_odds (cuenta para coverage pero no para promedios)
         # bet365: tomé 2.20 vs cierre 2.00 → CLV +10%
@@ -129,7 +129,7 @@ class TestPaperCLV:
         outcomes, books = await _seed_two_books(db_session)
         from app.models.match import Match
         match = (await db_session.execute(select(Match))).scalar_one()
-        ch = next(o for o in outcomes if o.key == "ch")
+        ch = next(o for o in outcomes if o.key == "home")
 
         db_session.add_all([
             _bet(match.id, ch, books["bet365"], "2.20", "2.00"),
@@ -148,7 +148,7 @@ class TestPaperCLV:
         outcomes, books = await _seed_two_books(db_session)
         from app.models.match import Match
         match = (await db_session.execute(select(Match))).scalar_one()
-        ch = next(o for o in outcomes if o.key == "ch")
+        ch = next(o for o in outcomes if o.key == "home")
 
         db_session.add_all([
             _bet(match.id, ch, books["bet365"], "2.20", "2.00", source="value"),

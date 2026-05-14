@@ -194,6 +194,7 @@ async def revalidate_arbitrage(arb_id: int, db: AsyncSession = Depends(get_db)):
     # permisiva que la detección (en particular, max_odds_age_minutes).
     svc = ArbitrageDetectionService(
         min_profit_pct=settings.ARB_MIN_PROFIT_PCT,
+        min_profit_pct_alt=settings.ARB_MIN_PROFIT_PCT_ALT,
         min_bookmakers=settings.ARB_MIN_BOOKMAKERS,
         max_odds_age_minutes=settings.ARB_MAX_ODDS_AGE_MINUTES,
         max_minutes_to_kickoff=settings.ARB_MAX_HOURS_TO_KICKOFF * 60,

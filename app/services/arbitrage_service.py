@@ -65,8 +65,13 @@ class ArbitrageDetectionService:
         max_minutes_to_kickoff: int = 10080,
         max_odds_age_minutes: int = 30,
         min_bookmakers_per_sport: dict[str, int] | None = None,
+        min_profit_pct_alt: float | None = None,
     ):
         self.min_profit_pct = min_profit_pct
+        # Threshold para mercados con línea no-central (alt). None = usa el
+        # mismo threshold global, sin distinguir. Más alto que `min_profit_pct`
+        # es lo común: las líneas extremas concentran palp errors.
+        self.min_profit_pct_alt = min_profit_pct_alt
         self.min_bookmakers = min_bookmakers
         self.min_minutes_to_kickoff = min_minutes_to_kickoff
         self.max_minutes_to_kickoff = max_minutes_to_kickoff
@@ -153,9 +158,26 @@ class ArbitrageDetectionService:
             )
         ).scalars().all()
 
+        # Línea "central" por market_type del match: mediana de los parameters
+        # observados. Markets cuyo parameter difiere de la central se consideran
+        # alts y reciben un threshold de profit más estricto. None = no hay
+        # suficientes líneas para distinguir (sin diferenciación).
+        central_by_type: dict[int, float | None] = {}
+        params_by_type: dict[int, set[float]] = {}
+        for m in markets:
+            if m.parameter is None:
+                continue
+            params_by_type.setdefault(m.market_type_id, set()).add(float(m.parameter))
+        for mt_id, params in params_by_type.items():
+            ordered = sorted(params)
+            central_by_type[mt_id] = (
+                ordered[len(ordered) // 2] if len(ordered) > 1 else None
+            )
+
         for market in markets:
+            min_profit = self._min_profit_for(market, central_by_type)
             arb = await self._detect_for_market(
-                db, market, commission_map, sport_key
+                db, market, commission_map, sport_key, min_profit
             )
             if arb:
                 saved = await self._save_arb(db, arb, market, match)
@@ -164,12 +186,30 @@ class ArbitrageDetectionService:
 
         return new_arbs, len(markets)
 
+    def _min_profit_for(
+        self,
+        market: Market,
+        central_by_type: dict[int, float | None],
+    ) -> float:
+        """Threshold de profit para este market: alt si parameter difiere de
+        la mediana de líneas del match (y `min_profit_pct_alt` configurado).
+        """
+        if self.min_profit_pct_alt is None or market.parameter is None:
+            return self.min_profit_pct
+        central = central_by_type.get(market.market_type_id)
+        if central is None:
+            return self.min_profit_pct
+        if float(market.parameter) == central:
+            return self.min_profit_pct
+        return self.min_profit_pct_alt
+
     async def _detect_for_market(
         self,
         db: AsyncSession,
         market: Market,
         commission_map: dict[str, float],
         sport_key: str | None = None,
+        min_profit_pct: float | None = None,
     ) -> ArbOpportunity | None:
         outcomes = (
             await db.execute(
@@ -180,16 +220,44 @@ class ArbitrageDetectionService:
         if not outcomes:
             return None
 
+        # Filtrar outcomes sin ninguna cuota fresca. Caso típico: tras la
+        # canonicalización h2h/spreads → home/away (ver odds_service), los
+        # Outcome rows con keys legacy (`arsenal`, `chelsea`, etc.) siguen
+        # en DB pero ya no reciben cuotas. Si los pasamos al detector, el
+        # filtro `len(odds_list) == num_outcomes` mata todos los books del
+        # market → 0 arbs aunque los home/away/draw tengan cuotas válidas.
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            minutes=self.max_odds_age_minutes
+        )
+        live_ids = set(
+            (
+                await db.execute(
+                    select(Odds.outcome_id)
+                    .where(
+                        Odds.outcome_id.in_([o.id for o in outcomes]),
+                        Odds.captured_at >= cutoff,
+                    )
+                    .distinct()
+                )
+            ).scalars().all()
+        )
+        outcomes = [o for o in outcomes if o.id in live_ids]
+        if not outcomes:
+            return None
+
         outcome_keys = [o.key for o in outcomes]
         outcome_names = [o.name for o in outcomes]
 
         odds_by_bookmaker = await self._get_latest_odds_by_bookmaker(db, outcomes)
 
+        effective_min_profit = (
+            min_profit_pct if min_profit_pct is not None else self.min_profit_pct
+        )
         return detect_arbitrage(
             odds_by_bookmaker=odds_by_bookmaker,
             outcome_keys=outcome_keys,
             outcome_names=outcome_names,
-            min_profit_pct=self.min_profit_pct,
+            min_profit_pct=effective_min_profit,
             min_bookmakers=self._min_bookmakers_for(sport_key),
             commission_by_bookmaker=commission_map,
         )

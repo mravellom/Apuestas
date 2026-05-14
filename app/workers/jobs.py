@@ -35,6 +35,33 @@ async def _get_last_successful_fetch_at(db) -> datetime | None:
     ).scalar_one_or_none()
 
 
+# Mercados `alternate_*` por sport. Solo se suman a los markets base cuando
+# `settings.FETCH_ALT_MARKETS=True`. Costo: +1 request a The Odds API por
+# (sport, mercado_alt) por fetch — rollout gradual:
+#   1) habilitar solo `baseball: [alternate_totals]`,
+#   2) observar quota burn + ratio real/falso 48-72h,
+#   3) agregar icehockey, luego basketball (incluye alt_spreads — exige el
+#      fix de outcome key home/away para no fragmentar el Market).
+SPORT_ALT_MARKETS: dict[str, list[str]] = {
+    "baseball": ["alternate_totals"],
+    "basketball": ["alternate_totals", "alternate_spreads"],
+    "icehockey": ["alternate_totals"],
+}
+
+
+def _markets_for(sport_key: str, base_markets: list[str]) -> list[str]:
+    """Markets a pedir a The Odds API para un sport, aplicando feature flag.
+
+    El adapter normaliza `alternate_totals`/`alternate_spreads` a las keys
+    base, por lo que el resto del pipeline (ingesta, detección, frontend)
+    no necesita conocer la distinción.
+    """
+    if not settings.FETCH_ALT_MARKETS:
+        return base_markets
+    alts = SPORT_ALT_MARKETS.get(sport_key, [])
+    return base_markets + alts
+
+
 # Regiones y mercados por deporte — hardcoded porque no cambian por liga.
 # Si un deporte no está listado aquí, las ligas de ese deporte no se fetchearán
 # aunque tengan detection_enabled=True (salvaguarda contra fetches accidentales).
@@ -257,7 +284,7 @@ async def fetch_odds_job():
                         sport_key=sport_key,
                         league_keys=league_keys,
                         regions=cfg["regions"],
-                        markets=cfg["markets"],
+                        markets=_markets_for(sport_key, cfg["markets"]),
                     )
                     for k in total:
                         total[k] += c.get(k, 0)
@@ -357,6 +384,7 @@ async def detect_arbitrage_job():
 
     service = ArbitrageDetectionService(
         min_profit_pct=settings.ARB_MIN_PROFIT_PCT,
+        min_profit_pct_alt=settings.ARB_MIN_PROFIT_PCT_ALT,
         min_bookmakers=settings.ARB_MIN_BOOKMAKERS,
         max_odds_age_minutes=settings.ARB_MAX_ODDS_AGE_MINUTES,
         max_minutes_to_kickoff=settings.ARB_MAX_HOURS_TO_KICKOFF * 60,

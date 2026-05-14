@@ -9,6 +9,55 @@ from app.models.team import Team, TeamAlias
 
 class TeamNormalizer:
     FUZZY_THRESHOLD = 85
+    # Threshold para `same_team` (matching de outcome name → home/away).
+    # Más bajo que FUZZY_THRESHOLD porque outcome names suelen ser variantes
+    # cortas ("Red Sox" vs "Boston Red Sox") y token_set_ratio devuelve 100
+    # cuando uno es subset del otro — el threshold solo importa para distinguir
+    # entre dos equipos del mismo match.
+    SAME_TEAM_THRESHOLD = 80
+
+    @staticmethod
+    def match_score(a: str, b: str) -> int:
+        """Score 0-100 de similitud textual entre dos nombres de equipo.
+
+        100 si coinciden exacto (case/whitespace-insensitive). Si no,
+        token_set_ratio para tolerar abreviaciones (`"Red Sox"` ≈ `"Boston
+        Red Sox"`). Comparación pura, sin DB.
+        """
+        if not a or not b:
+            return 0
+        if a.strip().lower() == b.strip().lower():
+            return 100
+        return int(fuzz.token_set_ratio(a.lower(), b.lower()))
+
+    @classmethod
+    def resolve_side(
+        cls,
+        outcome_name: str,
+        home_team_name: str | None,
+        away_team_name: str | None,
+    ) -> str | None:
+        """Devuelve `'home'`/`'away'` si `outcome_name` matchea con uno de los
+        dos equipos por encima del threshold; `None` si ninguno o si hay
+        empate (ambiguo). Usado por `_normalize_outcome_key` para canonizar
+        outcomes de spreads/h2h sin fracturar el mercado por variantes del
+        nombre (`"Red Sox"` vs `"Boston Red Sox"`).
+
+        Cuando ambos lados pasan el threshold (caso típico: equipos con un
+        token en común como `"Detail A"` vs `"Detail H"`), se elige el de
+        score más alto. Si empatan exactamente, se devuelve `None` para
+        que el caller use fallback — preferimos un outcome verboso a uno
+        mal mapeado.
+        """
+        home_score = cls.match_score(outcome_name, home_team_name or "")
+        away_score = cls.match_score(outcome_name, away_team_name or "")
+        if max(home_score, away_score) < cls.SAME_TEAM_THRESHOLD:
+            return None
+        if home_score > away_score:
+            return "home"
+        if away_score > home_score:
+            return "away"
+        return None  # tie — ambiguous
 
     async def resolve(
         self, raw_name: str, source: str, sport_id: int, db: AsyncSession

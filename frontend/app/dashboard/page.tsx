@@ -5,13 +5,19 @@ import { useRouter } from "next/navigation";
 
 import { Header } from "@/components/Header";
 import {
+  getDailyDeployment,
   getDashboardSummary,
   listAdminLeagues,
   toggleLeague,
 } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
 import { sportAccentColor } from "@/lib/sportColors";
-import type { AdminLeague, DashboardSummary, HourBucket } from "@/lib/types";
+import type {
+  AdminLeague,
+  DailyDeployment,
+  DashboardSummary,
+  HourBucket,
+} from "@/lib/types";
 
 const WINDOW_PRESETS: { label: string; days: number }[] = [
   { label: "1d", days: 1 },
@@ -25,6 +31,7 @@ export default function DashboardPage() {
   const [windowDays, setWindowDays] = useState(7);
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [leagues, setLeagues] = useState<AdminLeague[]>([]);
+  const [deployment, setDeployment] = useState<DailyDeployment | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,12 +39,14 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [d, lg] = await Promise.all([
+      const [d, lg, dep] = await Promise.all([
         getDashboardSummary(windowDays),
         listAdminLeagues().catch(() => [] as AdminLeague[]),
+        getDailyDeployment(windowDays).catch(() => null),
       ]);
       setData(d);
       setLeagues(lg);
+      setDeployment(dep);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error cargando dashboard");
     } finally {
@@ -123,6 +132,7 @@ export default function DashboardPage() {
 
         {data ? (
           <>
+            {deployment ? <DeploymentCard data={deployment} /> : null}
             <SportsCard data={data} />
             {leagues.length > 0 ? (
               <LeaguesPanel leagues={leagues} onToggle={handleToggleLeague} />
@@ -169,6 +179,167 @@ export default function DashboardPage() {
           </div>
         ) : null}
       </main>
+    </div>
+  );
+}
+
+// ── Daily deployment (utilización banca) ────────────────────────────────────
+function DeploymentCard({ data }: { data: DailyDeployment }) {
+  const s = data.summary;
+  const rowsWithActivity = data.rows.filter((r) => r.num_bets > 0);
+  const fmt = (n: number) => n.toLocaleString("es-CL", { maximumFractionDigits: 2 });
+  const pct = (n: number | null | undefined, digits = 2) =>
+    n == null ? "—" : `${n.toFixed(digits)}%`;
+  const ccy = s.bankroll_currency ?? "";
+
+  return (
+    <section className="rounded-lg border border-border bg-surface p-5">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-white">
+            Banca desplegada por día
+          </h2>
+          <p className="text-xs text-muted">
+            Cuánta banca real puso a trabajar (`bet_tracking`) vs banca actual.
+            Mide utilización efectiva, no edge teórico.
+          </p>
+        </div>
+        <span className="text-xs text-muted">
+          Banca total{" "}
+          <span className="font-mono text-white">
+            {fmt(s.bankroll_total)} {ccy}
+          </span>
+        </span>
+      </div>
+
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Metric
+          label="Utilización promedio"
+          value={pct(s.avg_utilization_pct, 2)}
+          hint={`${s.days_with_activity} de ${data.window_days} días con apuestas`}
+        />
+        <Metric
+          label="Edge teórico promedio"
+          value={pct(s.avg_theoretical_edge_pct, 3)}
+          hint="por arb tocado"
+          accent="#06b6d4"
+        />
+        <Metric
+          label="ROI realizado periodo"
+          value={pct(s.realized_roi_pct, 3)}
+          hint={s.realized_roi_pct == null ? "sin liquidados" : "sobre stake liquidado"}
+          accent={
+            s.realized_roi_pct == null
+              ? undefined
+              : s.realized_roi_pct >= 0
+                ? "#22c55e"
+                : "#ef4444"
+          }
+        />
+        <Metric
+          label="Stake / Profit"
+          value={`${fmt(s.total_stake_period)} / ${fmt(s.total_realized_profit)}`}
+          hint={ccy || undefined}
+        />
+      </div>
+
+      {rowsWithActivity.length === 0 ? (
+        <div className="rounded border border-border/60 bg-bg p-4 text-sm text-muted">
+          Sin apuestas reales registradas en la ventana. Cuando empieces a usar{" "}
+          <code className="font-mono text-white">/arbitrage/{`{id}`}/execute</code>{" "}
+          y confirmes en <code className="font-mono text-white">bet_tracking</code>,
+          aparecerán acá. (Hay {s.days_with_activity === 0 ? "0" : s.days_with_activity}{" "}
+          días con actividad en los últimos {data.window_days}).
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-[10px] uppercase tracking-wide text-muted">
+              <tr className="border-b border-border">
+                <th className="py-2 pr-3 text-left">Fecha</th>
+                <th className="py-2 pr-3 text-right">Arbs</th>
+                <th className="py-2 pr-3 text-right">Bets</th>
+                <th className="py-2 pr-3 text-right">Stake</th>
+                <th className="py-2 pr-3 text-right">Util %</th>
+                <th className="py-2 pr-3 text-right">Edge teórico</th>
+                <th className="py-2 pr-3 text-right">ROI realizado</th>
+                <th className="py-2 pr-3 text-right">Liq / Pend</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rowsWithActivity.map((r) => (
+                <tr key={r.date} className="border-b border-border/40">
+                  <td className="py-2 pr-3 font-mono text-white">{r.date}</td>
+                  <td className="py-2 pr-3 text-right font-mono text-white">
+                    {r.num_arbs}
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono text-muted">
+                    {r.num_bets}
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono text-white">
+                    {fmt(r.total_stake)}
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono">
+                    <span
+                      className={
+                        (r.utilization_pct ?? 0) > 80
+                          ? "text-warn"
+                          : "text-accent"
+                      }
+                    >
+                      {pct(r.utilization_pct, 2)}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono text-muted">
+                    {pct(r.theoretical_edge_avg_pct, 3)}
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono">
+                    <span
+                      className={
+                        r.realized_roi_pct == null
+                          ? "text-muted"
+                          : r.realized_roi_pct >= 0
+                            ? "text-accent"
+                            : "text-danger"
+                      }
+                    >
+                      {pct(r.realized_roi_pct, 3)}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-right font-mono text-muted">
+                    {r.settled_bets} / {r.pending_bets}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  hint,
+  accent,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  accent?: string;
+}) {
+  return (
+    <div className="rounded border border-border/60 bg-bg p-3">
+      <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
+      <div
+        className="mt-1 font-mono text-lg"
+        style={{ color: accent ?? "#ffffff" }}
+      >
+        {value}
+      </div>
+      {hint ? <div className="mt-1 text-[11px] text-muted">{hint}</div> : null}
     </div>
   );
 }

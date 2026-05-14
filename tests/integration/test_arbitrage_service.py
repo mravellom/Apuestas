@@ -599,3 +599,126 @@ class TestSuspendedOddsFilter:
 
         result = await svc.revalidate_arb(db_session, arb.id)
         assert result.status == "dead"
+
+
+def _raw_totals(
+    home: str, away: str, bookmaker: str, line: float,
+    over_price: float, under_price: float, commence: datetime,
+    league_key: str = "baseball_mlb",
+) -> RawOddsData:
+    return RawOddsData(
+        source="test",
+        sport_key=league_key,
+        league_key=league_key,
+        home_team=home,
+        away_team=away,
+        commence_time=commence,
+        bookmaker=bookmaker,
+        market_type="totals",
+        outcomes=[
+            RawOutcome(name="Over", price=over_price, point=line),
+            RawOutcome(name="Under", price=under_price, point=line),
+        ],
+        parameter=line,
+        external_id=f"test_alt_{home}_{away}",
+    )
+
+
+async def _ingest_two_line_totals(
+    db: AsyncSession,
+    central_line: float = 8.5,
+    alt_line: float = 7.5,
+    over_price_a: float = 2.02,
+    under_price_a: float = 1.96,
+    over_price_b: float = 1.96,
+    under_price_b: float = 2.02,
+) -> None:
+    """Seed baseball match con totals en dos líneas (central + alt) y 2 books
+    cruzando best odds para que ambas líneas formen arb con ~1% de profit.
+    """
+    commence = datetime.now(timezone.utc) + timedelta(days=1)
+    await seed_database(db)
+    data = []
+    for line in (central_line, alt_line):
+        data.append(_raw_totals(
+            "Yankees", "Red Sox", "pinnacle", line,
+            over_price_a, under_price_a, commence,
+        ))
+        data.append(_raw_totals(
+            "Yankees", "Red Sox", "bet365", line,
+            over_price_b, under_price_b, commence,
+        ))
+    service = OddsIngestionService(FakeAdapter(data))
+    await service.ingest_odds(
+        db, sport_key="baseball", league_keys=["baseball_mlb"]
+    )
+
+
+class TestAltMarketThreshold:
+    async def test_alt_line_skipped_when_below_alt_threshold(
+        self, db_session: AsyncSession
+    ):
+        """Con `min_profit_pct_alt` configurado, una línea alt con profit
+        debajo del threshold alt (pero arriba del base) no debe generar arb.
+        Solo la línea central pasa.
+        """
+        await _ingest_two_line_totals(db_session)
+
+        service = ArbitrageDetectionService(
+            min_profit_pct=0.5,
+            min_profit_pct_alt=1.5,
+            min_bookmakers=2,
+            min_bookmakers_per_sport={},
+        )
+        counts, new_arbs = await service.detect_all(db_session)
+
+        # 1 arb (línea central 8.5), no en 7.5 (alt + profit ~1% < 1.5%)
+        assert len(new_arbs) == 1, f"got {len(new_arbs)}"
+        # El arb detectado debe ser sobre la línea central
+        assert all(leg["point"] == 8.5 for leg in new_arbs[0].legs)
+
+    async def test_both_lines_detected_without_alt_threshold(
+        self, db_session: AsyncSession
+    ):
+        """Sin `min_profit_pct_alt`, ambas líneas pasan el threshold base."""
+        await _ingest_two_line_totals(db_session)
+
+        service = ArbitrageDetectionService(
+            min_profit_pct=0.5,
+            min_profit_pct_alt=None,
+            min_bookmakers=2,
+            min_bookmakers_per_sport={},
+        )
+        _, new_arbs = await service.detect_all(db_session)
+
+        # Sin distinción: ambas líneas forman arb (~1% profit > 0.5%)
+        assert len(new_arbs) == 2
+        points = sorted({leg["point"] for arb in new_arbs for leg in arb.legs})
+        assert points == [7.5, 8.5]
+
+    async def test_single_line_never_treated_as_alt(
+        self, db_session: AsyncSession
+    ):
+        """Si solo hay 1 línea ingestada, no hay forma de saber cuál es la
+        central — se trata todo con threshold base (no se descarta nada).
+        """
+        commence = datetime.now(timezone.utc) + timedelta(days=1)
+        await seed_database(db_session)
+        data = [
+            _raw_totals("Yankees", "Red Sox", "pinnacle", 7.5, 2.02, 1.96, commence),
+            _raw_totals("Yankees", "Red Sox", "bet365", 7.5, 1.96, 2.02, commence),
+        ]
+        service_ingest = OddsIngestionService(FakeAdapter(data))
+        await service_ingest.ingest_odds(
+            db_session, sport_key="baseball", league_keys=["baseball_mlb"]
+        )
+
+        service = ArbitrageDetectionService(
+            min_profit_pct=0.5,
+            min_profit_pct_alt=1.5,
+            min_bookmakers=2,
+            min_bookmakers_per_sport={},
+        )
+        _, new_arbs = await service.detect_all(db_session)
+        # 1 sola línea = no es alt = pasa con threshold base
+        assert len(new_arbs) == 1

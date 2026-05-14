@@ -189,8 +189,10 @@ class TestGetMatch:
         assert market["market_type_key"] == "h2h"
         assert len(market["outcomes"]) == 3
         outcome_keys = {o["key"] for o in market["outcomes"]}
-        # Outcome keys are derived from team names (lowercased, spaces→_); "draw" is literal
-        assert outcome_keys == {"detail_h", "draw", "detail_a"}
+        # h2h/spreads outcome keys se canonizan a home/away (via TeamNormalizer.
+        # resolve_side); "draw" es literal. Esto evita que dos libros con
+        # variantes del nombre del mismo equipo creen Outcome rows distintos.
+        assert outcome_keys == {"home", "draw", "away"}
 
 
 class TestMatchOdds:

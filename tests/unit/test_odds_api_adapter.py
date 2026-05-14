@@ -95,6 +95,50 @@ async def test_spreads_parameter_same_when_outcome_order_reversed():
 
 
 @pytest.mark.asyncio
+async def test_alternate_totals_normalized_to_totals():
+    """`alternate_totals` debe ingerirse como `totals` (mismo market_type base).
+
+    Sin esta normalización, un over 7.5 del endpoint default de un libro no
+    matchearía con un over 7.5 del endpoint alt de otro libro — quedarían en
+    Markets distintos y el detector nunca formaría arb.
+    """
+    adapter = OddsAPIAdapter(api_key="x", base_url="http://test")
+    event = _event_payload(
+        "alternate_totals",
+        [
+            {"name": "Over", "price": 2.20, "point": 7.5},
+            {"name": "Under", "price": 1.70, "point": 7.5},
+        ],
+    )
+
+    with patch.object(adapter.client, "get", new=AsyncMock(return_value=_fake_response([event]))):
+        data = await adapter.fetch_odds("baseball_mlb")
+
+    assert len(data) == 1
+    assert data[0].market_type == "totals"
+    assert data[0].parameter == 7.5
+
+
+@pytest.mark.asyncio
+async def test_alternate_spreads_normalized_to_spreads():
+    """`alternate_spreads` debe ingerirse como `spreads`."""
+    adapter = OddsAPIAdapter(api_key="x", base_url="http://test")
+    event = _event_payload(
+        "alternate_spreads",
+        [
+            {"name": "Home", "price": 2.50, "point": -2.5},
+            {"name": "Away", "price": 1.55, "point": 2.5},
+        ],
+    )
+
+    with patch.object(adapter.client, "get", new=AsyncMock(return_value=_fake_response([event]))):
+        data = await adapter.fetch_odds("basketball_nba")
+
+    assert data[0].market_type == "spreads"
+    assert data[0].parameter == 2.5
+
+
+@pytest.mark.asyncio
 async def test_h2h_has_no_parameter():
     """h2h sin point: parameter queda None."""
     adapter = OddsAPIAdapter(api_key="x", base_url="http://test")

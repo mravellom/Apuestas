@@ -488,7 +488,7 @@ class TestCaptureClosingLinesJob:
         # Apuesta sobre el outcome BH en bet365
         bh_outcome = (
             await db_session.execute(
-                select(Outcome).where(Outcome.key == "bh")
+                select(Outcome).where(Outcome.key == "home")
             )
         ).scalar_one()
         bet365 = (
@@ -531,7 +531,7 @@ class TestCaptureClosingLinesJob:
         match = (await db_session.execute(select(Match))).scalar_one()
         oh_outcome = (
             await db_session.execute(
-                select(Outcome).where(Outcome.key == "oh")
+                select(Outcome).where(Outcome.key == "home")
             )
         ).scalar_one()
         bet365 = (

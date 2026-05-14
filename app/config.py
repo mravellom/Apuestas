@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     ARB_MIN_BOOKMAKERS: int = 5
     # Mínimo profit_pct (net, post-comisión). Valores más altos = menos ruido pero menos arbs.
     ARB_MIN_PROFIT_PCT: float = 0.5
+    # Threshold específico para arbs sobre líneas alternate (no-centrales) de
+    # totals/spreads. Se exige más profit porque las colas de la distribución
+    # de líneas (over 5.5 / over 13.5 cuando consenso es 8.5) concentran palp
+    # errors: cuotas absurdas que el libro corrige en segundos. Empieza en 1.5%.
+    ARB_MIN_PROFIT_PCT_ALT: float = 1.5
+    # Ingesta de mercados alternate_totals/alternate_spreads desde The Odds API.
+    # Off por default: cada (sport, alt_market) habilitado cuesta +1 request
+    # por fetch a la quota. Encender por sport gradualmente vía SPORT_ALT_MARKETS
+    # en jobs.py tras observar yield real de arbs vs falsos positivos.
+    FETCH_ALT_MARKETS: bool = False
     # Edad máxima de una cuota para considerarla fresca en detección de arbs.
     # Con fetch cada 15min, 20 es más seguro que 30 (evita cuotas stale).
     ARB_MAX_ODDS_AGE_MINUTES: int = 20
