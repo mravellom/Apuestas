@@ -63,18 +63,18 @@ LEAGUES = [
     {"sport_key": "boxing", "key": "boxing_boxing", "name": "Boxing", "country": "Global"},
     # Tenis — The Odds API tiene una key por torneo, no tour-level. Solo el torneo
     # en curso devuelve eventos; el resto debe togglearse via /admin/leagues/.../toggle
-    # cuando rota el calendario. detection_enabled inicial refleja activos al 2026-05-04
-    # (semana Roma). Markets: 2-way h2h, Pinnacle siempre cotiza tour principal.
+    # cuando rota el calendario. detection_enabled inicial refleja activos al 2026-05-22
+    # (Roland Garros). Markets: 2-way h2h, Pinnacle siempre cotiza tour principal.
     # ATP
     {"sport_key": "tennis", "key": "tennis_atp_aus_open_singles", "name": "ATP Australian Open", "country": "Australia", "detection_enabled": False},
-    {"sport_key": "tennis", "key": "tennis_atp_french_open", "name": "ATP French Open", "country": "France", "detection_enabled": False},
+    {"sport_key": "tennis", "key": "tennis_atp_french_open", "name": "ATP French Open", "country": "France", "detection_enabled": True},
     {"sport_key": "tennis", "key": "tennis_atp_wimbledon", "name": "ATP Wimbledon", "country": "England", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_us_open", "name": "ATP US Open", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_indian_wells", "name": "ATP Indian Wells", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_miami_open", "name": "ATP Miami Open", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_monte_carlo_masters", "name": "ATP Monte Carlo", "country": "Monaco", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_madrid_open", "name": "ATP Madrid Open", "country": "Spain", "detection_enabled": False},
-    {"sport_key": "tennis", "key": "tennis_atp_italian_open", "name": "ATP Italian Open", "country": "Italy", "detection_enabled": True},
+    {"sport_key": "tennis", "key": "tennis_atp_italian_open", "name": "ATP Italian Open", "country": "Italy", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_canadian_open", "name": "ATP Canadian Open", "country": "Canada", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_cincinnati_open", "name": "ATP Cincinnati", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_atp_shanghai_masters", "name": "ATP Shanghai Masters", "country": "China", "detection_enabled": False},
@@ -86,13 +86,13 @@ LEAGUES = [
     {"sport_key": "tennis", "key": "tennis_atp_munich", "name": "ATP Munich", "country": "Germany", "detection_enabled": False},
     # WTA
     {"sport_key": "tennis", "key": "tennis_wta_aus_open_singles", "name": "WTA Australian Open", "country": "Australia", "detection_enabled": False},
-    {"sport_key": "tennis", "key": "tennis_wta_french_open", "name": "WTA French Open", "country": "France", "detection_enabled": False},
+    {"sport_key": "tennis", "key": "tennis_wta_french_open", "name": "WTA French Open", "country": "France", "detection_enabled": True},
     {"sport_key": "tennis", "key": "tennis_wta_wimbledon", "name": "WTA Wimbledon", "country": "England", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_us_open", "name": "WTA US Open", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_indian_wells", "name": "WTA Indian Wells", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_miami_open", "name": "WTA Miami Open", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_madrid_open", "name": "WTA Madrid Open", "country": "Spain", "detection_enabled": False},
-    {"sport_key": "tennis", "key": "tennis_wta_italian_open", "name": "WTA Italian Open", "country": "Italy", "detection_enabled": True},
+    {"sport_key": "tennis", "key": "tennis_wta_italian_open", "name": "WTA Italian Open", "country": "Italy", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_canadian_open", "name": "WTA Canadian Open", "country": "Canada", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_cincinnati_open", "name": "WTA Cincinnati", "country": "USA", "detection_enabled": False},
     {"sport_key": "tennis", "key": "tennis_wta_dubai", "name": "WTA Dubai", "country": "UAE", "detection_enabled": False},
