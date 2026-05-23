@@ -174,6 +174,85 @@ async def paper_stats(
     )
 
 
+class EquityPoint(BaseModel):
+    """Un punto de la curva de equity (1 por apuesta settled)."""
+    timestamp: str
+    bet_count: int
+    cumulative_profit: float
+    drawdown_units: float
+
+
+class EquityCurveResponse(BaseModel):
+    points: list[EquityPoint]
+    max_drawdown_units: float
+    # Sharpe proxy: media / stdev de returns diarios. Null si <10 settled
+    # o <2 días distintos — sin volumen no es señal, es ruido.
+    sharpe_proxy: float | None
+
+
+@router.get("/equity-curve", response_model=EquityCurveResponse)
+async def paper_equity_curve(
+    source_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Curva de equity acumulada para validar degradación del edge.
+
+    Devuelve un punto por apuesta resuelta (won/lost/void) en orden
+    cronológico, con `cumulative_profit` y `drawdown_units` (peak − current).
+    Suma `sharpe_proxy` = mean/stdev de returns diarios — informativo, no
+    riguroso (no anualizado, no risk-free rate).
+
+    `source_type` filtra a "arbitrage" o "value" para ver cada estrategia
+    por separado.
+    """
+    from collections import defaultdict
+
+    query = (
+        select(PaperBet.placed_at, PaperBet.profit_units)
+        .where(PaperBet.result.in_(["won", "lost", "void"]))
+        .order_by(PaperBet.placed_at.asc())
+    )
+    if source_type:
+        query = query.where(PaperBet.source_type == source_type)
+    rows = (await db.execute(query)).all()
+
+    points: list[EquityPoint] = []
+    cumulative = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for i, (placed_at, profit) in enumerate(rows):
+        cumulative += float(profit or 0)
+        peak = max(peak, cumulative)
+        dd = peak - cumulative
+        max_dd = max(max_dd, dd)
+        points.append(EquityPoint(
+            timestamp=placed_at.isoformat() if placed_at else "",
+            bet_count=i + 1,
+            cumulative_profit=round(cumulative, 4),
+            drawdown_units=round(dd, 4),
+        ))
+
+    sharpe: float | None = None
+    if len(rows) >= 10:
+        daily: dict = defaultdict(float)
+        for placed_at, profit in rows:
+            if placed_at is None:
+                continue
+            daily[placed_at.date()] += float(profit or 0)
+        returns = list(daily.values())
+        if len(returns) >= 2:
+            stdev_r = statistics.stdev(returns)
+            sharpe = (
+                round(statistics.mean(returns) / stdev_r, 4) if stdev_r > 0 else 0.0
+            )
+
+    return EquityCurveResponse(
+        points=points,
+        max_drawdown_units=round(max_dd, 4),
+        sharpe_proxy=sharpe,
+    )
+
+
 class CLVBreakdown(BaseModel):
     bets: int
     avg_clv_pct: float

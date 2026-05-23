@@ -160,3 +160,116 @@ class TestPaperCLV:
         data = response.json()
         assert data["bets_with_clv"] == 1
         assert data["avg_clv_pct"] == pytest.approx(0.15)
+
+
+def _settled_bet(match_id, outcome, bookmaker, placed_at, profit_units, source="value"):
+    """Helper para tests de equity-curve: bet ya resuelto con profit dado."""
+    return PaperBet(
+        source_type=source,
+        match_id=match_id,
+        outcome_id=outcome.id,
+        bookmaker_id=bookmaker.id,
+        odds_taken=Decimal("2.00"),
+        stake_units=Decimal("1.0"),
+        ev_at_placement=Decimal("0.03"),
+        result="won" if float(profit_units) > 0 else "lost" if float(profit_units) < 0 else "void",
+        profit_units=Decimal(str(profit_units)),
+        placed_at=placed_at,
+    )
+
+
+class TestPaperEquityCurve:
+    async def test_sin_settled_devuelve_vacio(self, client):
+        response = await client.get("/api/v1/paper/equity-curve")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["points"] == []
+        assert data["max_drawdown_units"] == 0.0
+        assert data["sharpe_proxy"] is None
+
+    async def test_acumula_pnl_y_calcula_drawdown(self, client, db_session):
+        outcomes, books = await _seed_two_books(db_session)
+        from app.models.match import Match
+        match = (await db_session.execute(select(Match))).scalar_one()
+        ch = next(o for o in outcomes if o.key == "home")
+
+        base = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        # Secuencia: +1.0, +0.5 (peak 1.5), -1.0 (current 0.5, dd 1.0), +0.3
+        db_session.add_all([
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=1), 1.0),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=2), 0.5),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=3), -1.0),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=4), 0.3),
+        ])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/paper/equity-curve")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["points"]) == 4
+
+        cumulative = [p["cumulative_profit"] for p in data["points"]]
+        assert cumulative == pytest.approx([1.0, 1.5, 0.5, 0.8])
+
+        drawdowns = [p["drawdown_units"] for p in data["points"]]
+        # Peak running: 1.0, 1.5, 1.5, 1.5 → DD: 0, 0, 1.0, 0.7
+        assert drawdowns == pytest.approx([0.0, 0.0, 1.0, 0.7])
+
+        assert data["max_drawdown_units"] == pytest.approx(1.0)
+
+    async def test_orden_cronologico_independiente_de_insercion(self, client, db_session):
+        """Aunque se inserten desordenados, el endpoint los ordena por placed_at."""
+        outcomes, books = await _seed_two_books(db_session)
+        from app.models.match import Match
+        match = (await db_session.execute(select(Match))).scalar_one()
+        ch = next(o for o in outcomes if o.key == "home")
+
+        base = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        # Inserto en orden inverso a propósito.
+        db_session.add_all([
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=3), 0.5),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=1), 1.0),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=2), -0.5),
+        ])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/paper/equity-curve")
+        cumulative = [p["cumulative_profit"] for p in response.json()["points"]]
+        # Esperado en orden temporal: +1.0, +0.5 (cum 0.5), +0.5 (cum 1.0)
+        assert cumulative == pytest.approx([1.0, 0.5, 1.0])
+
+    async def test_filtra_por_source_type(self, client, db_session):
+        outcomes, books = await _seed_two_books(db_session)
+        from app.models.match import Match
+        match = (await db_session.execute(select(Match))).scalar_one()
+        ch = next(o for o in outcomes if o.key == "home")
+
+        base = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        db_session.add_all([
+            _settled_bet(match.id, ch, books["bet365"], base, 1.0, source="value"),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=1), 2.0, source="arbitrage"),
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=2), -0.5, source="value"),
+        ])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/paper/equity-curve?source_type=arbitrage")
+        data = response.json()
+        assert len(data["points"]) == 1
+        assert data["points"][0]["cumulative_profit"] == pytest.approx(2.0)
+
+    async def test_sharpe_es_none_con_pocos_settled(self, client, db_session):
+        """<10 settled = sharpe_proxy null (no hay señal estadística)."""
+        outcomes, books = await _seed_two_books(db_session)
+        from app.models.match import Match
+        match = (await db_session.execute(select(Match))).scalar_one()
+        ch = next(o for o in outcomes if o.key == "home")
+
+        base = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        db_session.add_all([
+            _settled_bet(match.id, ch, books["bet365"], base + timedelta(hours=i), 1.0)
+            for i in range(5)
+        ])
+        await db_session.commit()
+
+        response = await client.get("/api/v1/paper/equity-curve")
+        assert response.json()["sharpe_proxy"] is None
