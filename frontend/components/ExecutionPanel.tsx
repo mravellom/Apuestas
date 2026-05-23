@@ -12,6 +12,7 @@ import {
   revalidateArbitrage,
 } from "@/lib/api";
 import { formatMoney } from "@/lib/format";
+import { bookmakerUrl, openLinkLabel } from "@/lib/bookmakerLinks";
 import type {
   Arbitrage,
   Bankroll,
@@ -304,37 +305,86 @@ function ExecutionProgress({
         </div>
       ) : null}
 
-      <div className="space-y-3">
-        {plan.legs.map((leg) => (
-          <LegCard
-            key={leg.bet_id}
-            leg={leg}
-            currency={plan.currency}
-            bet={bets[leg.bet_id] ?? null}
-            onChanged={onChanged}
-          />
-        ))}
-      </div>
+      {(() => {
+        // Orden de fuego: soft (commission_pct=0) primero — son los que pueden
+        // vanish/limitar/rechazar. Sharp/broker (commission_pct>0) al final
+        // porque SportMarket → Pinnacle acepta tickets de cualquier tamaño.
+        const sortedLegs = [...plan.legs].sort(
+          (a, b) => a.commission_pct - b.commission_pct,
+        );
+        const openableUrls = sortedLegs
+          .map((l) => bookmakerUrl(l.bookmaker_key))
+          .filter((u): u is string => u !== null);
+
+        return (
+          <>
+            {openableUrls.length > 1 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  for (const u of openableUrls) {
+                    window.open(u, "_blank", "noopener,noreferrer");
+                  }
+                }}
+                className="w-full rounded border border-accent/40 bg-accent/10 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/20"
+                title="Abre cada libro en una pestaña nueva — orden soft → sharp"
+              >
+                ↗ Abrir todos los libros (orden soft → sharp)
+              </button>
+            ) : null}
+
+            <div className="space-y-3">
+              {sortedLegs.map((leg, idx) => (
+                <LegCard
+                  key={leg.bet_id}
+                  leg={leg}
+                  currency={plan.currency}
+                  marketType={plan.market_type}
+                  bet={bets[leg.bet_id] ?? null}
+                  onChanged={onChanged}
+                  fireOrder={idx + 1}
+                  totalLegs={sortedLegs.length}
+                />
+              ))}
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
 
+type CopyKey = "stake" | "odds" | "outcome";
+
 function LegCard({
   leg,
   currency,
+  marketType,
   bet,
   onChanged,
+  fireOrder,
+  totalLegs,
 }: {
   leg: LegInstruction;
   currency: string;
+  marketType: string;
   bet: Bet | null;
   onChanged: () => void;
+  /** Posición en el orden de fuego — 1 = disparar primero. */
+  fireOrder: number;
+  totalLegs: number;
 }) {
   const [placedOdds, setPlacedOdds] = useState<string>(leg.target_odds.toFixed(2));
   const [working, setWorking] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState<CopyKey | null>(null);
 
   const status = bet?.status ?? "pending";
+  const url = bookmakerUrl(leg.bookmaker_key);
+  const showFireBadge = totalLegs > 1;
+  const isFirstFire = fireOrder === 1;
+  const stakeStr = leg.stake_amount.toFixed(2);
+  const oddsStr = leg.target_odds.toFixed(2);
 
   async function handlePlace() {
     const odds = Number(placedOdds);
@@ -367,16 +417,46 @@ function LegCard({
     }
   }
 
+  async function copyValue(key: CopyKey, value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      // clipboard requiere contexto seguro (HTTPS/localhost); fallback silencioso
+    }
+  }
+
   return (
     <div className="rounded border border-border bg-bg/50 p-4">
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
         <div>
           <span className="text-xs uppercase tracking-wide text-muted">
             {leg.bookmaker_name}
+            <span className="mx-1.5 text-muted/40">·</span>
+            <span>{marketType}</span>
           </span>
           <h3 className="text-base font-semibold text-white">{leg.outcome_name}</h3>
         </div>
-        <StatusBadge status={status} />
+        <div className="flex items-center gap-2">
+          {showFireBadge ? (
+            <span
+              className={`rounded px-2 py-0.5 text-xs font-bold ${
+                isFirstFire
+                  ? "bg-warn/20 text-warn"
+                  : "bg-border/40 text-muted"
+              }`}
+              title={
+                isFirstFire
+                  ? "Soft book — puede limitar/rechazar/vanish. Apostar PRIMERO."
+                  : "Vía broker (SportMarket → Pinnacle) — capacidad infinita. Apostar al final con calma."
+              }
+            >
+              {isFirstFire ? `🏃 ${fireOrder}° fire` : `⚓ ${fireOrder}° last`}
+            </span>
+          ) : null}
+          <StatusBadge status={status} />
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-3 text-sm">
@@ -402,6 +482,49 @@ function LegCard({
           Comisión aplicada: {(leg.commission_pct * 100).toFixed(2)}%
         </p>
       ) : null}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/50 pt-3">
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded border border-border bg-bg px-3 py-1.5 text-xs font-medium text-white hover:border-accent hover:text-accent"
+          >
+            ↗ Abrir {openLinkLabel(leg.bookmaker_name, leg.commission_pct)}
+          </a>
+        ) : (
+          <span className="text-xs text-muted">
+            (URL no configurada — agregar a <code>lib/bookmakerLinks.ts</code>)
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => copyValue("outcome", leg.outcome_name)}
+          className="rounded border border-border bg-bg px-3 py-1.5 text-xs font-medium text-white hover:border-accent hover:text-accent"
+          title="Copia el nombre del outcome — pégalo en el buscador del libro para encontrar el match"
+        >
+          {copied === "outcome" ? "✓ Copiado" : "📋 Outcome"}
+        </button>
+        <button
+          type="button"
+          onClick={() => copyValue("odds", oddsStr)}
+          className="rounded border border-border bg-bg px-3 py-1.5 text-xs font-medium text-white hover:border-accent hover:text-accent"
+          title="Copia la cuota objetivo (SportMarket Pro acepta cuota esperada como protección)"
+        >
+          {copied === "odds" ? "✓ Copiado" : `📋 Cuota ${oddsStr}`}
+        </button>
+        <button
+          type="button"
+          onClick={() => copyValue("stake", stakeStr)}
+          className="rounded border border-border bg-bg px-3 py-1.5 text-xs font-medium text-white hover:border-accent hover:text-accent"
+          title="Copia el monto exacto del stake al portapapeles"
+        >
+          {copied === "stake"
+            ? "✓ Copiado"
+            : `📋 Stake ${formatMoney(leg.stake_amount, currency)}`}
+        </button>
+      </div>
 
       {err ? <p className="mt-2 text-sm text-danger">{err}</p> : null}
 
