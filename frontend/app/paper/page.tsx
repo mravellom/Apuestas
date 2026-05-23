@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { EquityChart } from "@/components/EquityChart";
 import { Header } from "@/components/Header";
 import { getPaperCLV, getPaperStats, listPaperBets } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
@@ -101,6 +102,13 @@ export default function PaperTradingPage() {
             <PillCard label="Void" value={stats.void} />
           </div>
         ) : null}
+
+        <div className="mb-6">
+          <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-muted">
+            Curva de equity · arbitraje
+          </h2>
+          <EquityChart sourceType="arbitrage" />
+        </div>
 
         {clv ? <CLVPanel clv={clv} /> : null}
 

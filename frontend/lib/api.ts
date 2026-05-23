@@ -215,6 +215,28 @@ export async function getPaperCLV(filters: CLVFilters = {}): Promise<PaperCLV> {
   return request<PaperCLV>(`/api/v1/paper/clv${qs ? `?${qs}` : ""}`);
 }
 
+// Equity curve: tipos inline hasta que se regenere `lib/api-types.ts` con
+// `npm run types:generate` (requiere backend corriendo en localhost:8000).
+export interface PaperEquityPoint {
+  timestamp: string;
+  bet_count: number;
+  cumulative_profit: number;
+  drawdown_units: number;
+}
+
+export interface PaperEquityCurve {
+  points: PaperEquityPoint[];
+  max_drawdown_units: number;
+  sharpe_proxy: number | null;
+}
+
+export async function getPaperEquityCurve(
+  sourceType?: "value" | "arbitrage",
+): Promise<PaperEquityCurve> {
+  const qs = sourceType ? `?source_type=${sourceType}` : "";
+  return request<PaperEquityCurve>(`/api/v1/paper/equity-curve${qs}`);
+}
+
 export async function listBankrolls(): Promise<Bankroll[]> {
   return request<Bankroll[]>("/api/v1/users/bankroll");
 }
