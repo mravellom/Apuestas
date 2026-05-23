@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { listOpportunityHistory } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
+import { useOpportunityStream } from "@/lib/eventStream";
 import { sportAccentColor } from "@/lib/sportColors";
 import type { OpportunityHistoryItem } from "@/lib/types";
 
@@ -85,7 +86,7 @@ export default function ValueBetsPage() {
     void load();
   }, [load, router]);
 
-  // Auto-refresh cada 60s solo cuando se ven activas
+  // Auto-refresh cada 60s solo cuando se ven activas (fallback si SSE cae)
   useEffect(() => {
     if (status !== "active") return;
     const id = window.setInterval(() => {
@@ -93,6 +94,13 @@ export default function ValueBetsPage() {
     }, 60_000);
     return () => window.clearInterval(id);
   }, [load, status]);
+
+  // SSE: refetch inmediato cuando llega evento de value nueva (solo si filtrando activas)
+  useOpportunityStream({
+    onValue: useCallback(() => {
+      if (status === "active" && isAuthenticated()) void load();
+    }, [load, status]),
+  });
 
   const sportsAvailable = useMemo(() => {
     const set = new Set<string>();

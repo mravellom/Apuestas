@@ -13,6 +13,7 @@ from app.api.v1 import (
     performance,
     planning,
     sports,
+    stream,
     users,
 )
 
@@ -31,3 +32,4 @@ router.include_router(admin.router)
 router.include_router(execution.router)
 router.include_router(planning.router)
 router.include_router(dashboard.router)
+router.include_router(stream.router)

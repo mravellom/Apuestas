@@ -7,6 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.config import settings
 from app.workers.jobs import (
     capture_closing_lines_job,
+    check_calendar_rotation_job,
     cleanup_job,
     detect_arbitrage_job,
     detect_value_job,
@@ -88,6 +89,22 @@ def configure_scheduler():
         hours=1,
         id="cleanup",
         name="Cleanup expired opportunities",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Calendar rotation — semanal, lunes 12:00 UTC = 08:00 CLT (UTC-4).
+    # Lunes a la mañana CLT es la ventana lógica para revisar y togglear
+    # ligas antes de que arranquen torneos. La llamada a /sports es gratis
+    # (header `x-requests-last: 0`), el costo en quota es cero.
+    scheduler.add_job(
+        check_calendar_rotation_job,
+        "cron",
+        day_of_week="mon",
+        hour=12,
+        minute=0,
+        id="check_calendar_rotation",
+        name="Check calendar rotation (Odds API vs DB)",
         replace_existing=True,
         max_instances=1,
     )

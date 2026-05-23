@@ -358,6 +358,12 @@ async def detect_value_job():
 
             # Send notifications for new opportunities
             if new_opportunities:
+                # SSE push primero — independiente de NotificationService
+                # (que despacha Telegram/email a usuarios con AlertConfig).
+                from app.notifications.event_bus import bus as _sse_bus
+                for opp in new_opportunities:
+                    await _sse_bus.publish("value", {"id": opp.id})
+
                 notif_counts = await notification_service.notify_new_opportunities(
                     db, new_opportunities
                 )
@@ -404,6 +410,13 @@ async def detect_arbitrage_job():
 
             if not new_arbs:
                 return
+
+            # SSE push a clientes conectados al frontend — independiente del
+            # flow de Telegram (que requiere AlertConfig). Si no hay nadie
+            # suscrito, no-op silencioso.
+            from app.notifications.event_bus import bus as _sse_bus
+            for arb in new_arbs:
+                await _sse_bus.publish("arbitrage", {"id": arb.id})
 
             # Get alert configs for telegram + user's preferred currency for format
             from sqlalchemy import select
@@ -671,3 +684,98 @@ async def cleanup_job():
             logger.info("Cleanup: %d matches marked completed", completed)
     except Exception as e:
         logger.exception("Cleanup job failed")
+
+
+@tracked_job("check_calendar_rotation")
+async def check_calendar_rotation_job() -> None:
+    """Cruza /sports?all=false de The Odds API contra leagues en DB.
+
+    Pensado para correr semanal (cron). Resuelve el patrón observado de
+    "Roland Garros arrancó hace 2 días y nadie lo notó" — antes el calendario
+    se manejaba via nota de memoria y se olvidaba. Ahora el bot avisa por
+    Telegram.
+
+    Reporta 3 diffs al admin:
+      🆕 Activos en API pero NO en seed   → torneos nuevos por agregar
+      ⚪ En seed pero detection_enabled=f → oportunidad de toggle rápido
+      🔴 detection_enabled=t pero NO en API → off-season, gastando quota en vacío
+
+    Costo: 1 request gratis a `/sports/?all=false` por ejecución (header
+    `x-requests-last: 0` confirma que no descuenta de la quota).
+    """
+    if not settings.ODDS_API_KEY:
+        logger.warning("ODDS_API_KEY no configurada, skip calendar check")
+        return
+
+    from sqlalchemy import select as _select
+
+    from app.admin_alerter import send_admin_alert
+    from app.models.sport import League
+
+    adapter = OddsAPIAdapter()
+    try:
+        try:
+            active_sports = await adapter.list_sports(only_active=True)
+        except Exception:
+            logger.exception("Calendar check: error al consultar /sports")
+            return
+    finally:
+        await adapter.close()
+
+    active_api_keys = {
+        s["key"] for s in active_sports if s.get("active", True)
+    }
+
+    async with async_session() as db:
+        rows = (
+            await db.execute(_select(League.key, League.detection_enabled))
+        ).all()
+
+    db_keys = {r.key for r in rows}
+    db_enabled = {r.key for r in rows if r.detection_enabled}
+
+    new_in_api = sorted(active_api_keys - db_keys)
+    in_seed_but_off = sorted((active_api_keys & db_keys) - db_enabled)
+    scanning_dead = sorted(db_enabled - active_api_keys)
+
+    logger.info(
+        "Calendar check: %d nuevos sin seed, %d en seed off, %d escaneando off-season",
+        len(new_in_api),
+        len(in_seed_but_off),
+        len(scanning_dead),
+    )
+
+    if not (new_in_api or in_seed_but_off or scanning_dead):
+        return  # nada que reportar — no spammear Telegram
+
+    lines = ["🗓 Calendar rotation check"]
+
+    if new_in_api:
+        lines.append(
+            f"\n🆕 {len(new_in_api)} activo(s) en Odds API SIN seed (agregar a "
+            "seed_service.py):"
+        )
+        for k in new_in_api[:30]:
+            lines.append(f"  • {k}")
+        if len(new_in_api) > 30:
+            lines.append(f"  … +{len(new_in_api) - 30} más")
+
+    if in_seed_but_off:
+        lines.append(
+            f"\n⚪ {len(in_seed_but_off)} activo(s) en API y existen en seed "
+            "pero detection_enabled=false (toggle rápido):"
+        )
+        for k in in_seed_but_off[:30]:
+            lines.append(f"  • {k}")
+        if len(in_seed_but_off) > 30:
+            lines.append(f"  … +{len(in_seed_but_off) - 30} más")
+
+    if scanning_dead:
+        lines.append(
+            f"\n🔴 {len(scanning_dead)} con detection_enabled=true pero NO "
+            "listados activos en API (off-season, gasto en vacío):"
+        )
+        for k in scanning_dead:
+            lines.append(f"  • {k}")
+
+    await send_admin_alert("\n".join(lines))

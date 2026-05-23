@@ -143,6 +143,28 @@ class OddsAPIAdapter(DataSourceAdapter):
         self._capture_usage(response, "events", sport)
         return response.json()
 
+    async def list_sports(self, only_active: bool = True) -> list[dict]:
+        """Lista sport keys del catálogo de The Odds API.
+
+        `only_active=True` (default) filtra a feeds que tienen eventos próximos
+        — útil para chequear rotación de calendario (qué torneos arrancaron y
+        cuáles terminaron). Esta llamada es GRATIS — no descuenta de la quota
+        (el endpoint devuelve `x-requests-last: 0`).
+
+        Cada item del response:
+            {"key": "tennis_atp_french_open", "group": "Tennis",
+             "title": "ATP French Open", "description": "Men's Singles",
+             "active": True, "has_outrights": False}
+        """
+        url = f"{self.base_url}/sports/"
+        params = {
+            "apiKey": self.api_key,
+            "all": "false" if only_active else "true",
+        }
+        response = await self._get_with_retry(url, params, "sports", None)
+        self._capture_usage(response, "sports", None)
+        return response.json()
+
     async def fetch_odds(
         self,
         sport: str,

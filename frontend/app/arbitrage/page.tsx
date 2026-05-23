@@ -8,6 +8,7 @@ import { FilterBar } from "@/components/FilterBar";
 import { Header } from "@/components/Header";
 import { listArbitrage } from "@/lib/api";
 import { isAuthenticated } from "@/lib/auth";
+import { useOpportunityStream } from "@/lib/eventStream";
 import type { Arbitrage } from "@/lib/types";
 
 type Status = "active" | "expired";
@@ -43,13 +44,20 @@ export default function ArbitrageListPage() {
     void load();
   }, [load, router]);
 
-  // Auto-refresh cada 60 segundos
+  // Auto-refresh cada 60 segundos como fallback si SSE cae
   useEffect(() => {
     const id = window.setInterval(() => {
       if (isAuthenticated()) void load();
     }, 60_000);
     return () => window.clearInterval(id);
   }, [load]);
+
+  // SSE: refetch inmediato cuando llega evento de arb nueva (perceptibilidad ~1s vs 60s)
+  useOpportunityStream({
+    onArbitrage: useCallback(() => {
+      if (isAuthenticated()) void load();
+    }, [load]),
+  });
 
   const stats = useMemo(() => {
     if (items.length === 0) return null;
