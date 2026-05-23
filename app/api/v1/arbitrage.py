@@ -7,12 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
 from app.models.arbitrage import ArbitrageOpportunity
 from app.models.match import Match
 from app.models.market import Market, MarketType
+from app.models.sport import League, Season, Sport
 from app.models.team import Team
 from app.services.arbitrage_service import ArbitrageDetectionService
 
@@ -81,30 +83,42 @@ async def list_arbitrage(
     min_profit: float = 0.0,
     db: AsyncSession = Depends(get_db),
 ):
-    """Lista oportunidades de arbitraje."""
+    """Lista oportunidades de arbitraje.
+
+    Loadea las relaciones con `selectinload` en una sola pasada en vez del
+    patrón previo de 8 `db.get()` por arb (N+1). Para 100 arbs activos esto
+    pasa de ~800 queries a ~6 — el dashboard responde de forma constante
+    independientemente del volumen.
+    """
     query = (
         select(ArbitrageOpportunity)
         .where(ArbitrageOpportunity.status == status)
+        .options(
+            selectinload(ArbitrageOpportunity.match).selectinload(Match.home_team),
+            selectinload(ArbitrageOpportunity.match).selectinload(Match.away_team),
+            selectinload(ArbitrageOpportunity.match)
+                .selectinload(Match.season)
+                .selectinload(Season.league)
+                .selectinload(League.sport),
+            selectinload(ArbitrageOpportunity.market).selectinload(Market.market_type),
+        )
     )
     if min_profit > 0:
         query = query.where(ArbitrageOpportunity.profit_pct >= min_profit)
 
     query = query.order_by(ArbitrageOpportunity.profit_pct.desc())
 
-    from app.models.sport import League, Season, Sport
-
     result = (await db.execute(query)).scalars().all()
 
     response = []
     for arb in result:
-        match = await db.get(Match, arb.match_id)
-        market = await db.get(Market, arb.market_id)
-        market_type = await db.get(MarketType, market.market_type_id)
-        home = await db.get(Team, match.home_team_id)
-        away = await db.get(Team, match.away_team_id)
-        season = await db.get(Season, match.season_id)
-        league = await db.get(League, season.league_id)
-        sport = await db.get(Sport, league.sport_id)
+        match = arb.match
+        market = arb.market
+        market_type = market.market_type
+        home = match.home_team
+        away = match.away_team
+        league = match.season.league
+        sport = league.sport
 
         response.append(ArbResponse(
             id=arb.id,
