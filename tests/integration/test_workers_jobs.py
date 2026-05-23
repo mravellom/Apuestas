@@ -614,3 +614,92 @@ class TestCleanupJob:
         with caplog.at_level(logging.ERROR, logger="app.workers.jobs"):
             await jobs_module.cleanup_job()
         assert any("Cleanup job failed" in r.message for r in caplog.records)
+
+    async def test_purges_old_odds_closing_lines_and_api_usage(
+        self, patch_async_session, db_session, monkeypatch
+    ):
+        """Records más viejos que la retención se borran; los recientes sobreviven."""
+        from app.config import settings
+        from app.models.api_usage import ApiUsageLog
+        from app.models.bookmaker import Bookmaker
+
+        # Forzar retentions cortas para que sea fácil de probar.
+        monkeypatch.setattr(settings, "RETENTION_ODDS_DAYS", 7)
+        monkeypatch.setattr(settings, "RETENTION_CLOSING_LINES_DAYS", 30)
+        monkeypatch.setattr(settings, "RETENTION_API_USAGE_DAYS", 14)
+
+        await seed_database(db_session)
+        # Necesitamos un Match y outcomes para Odds/ClosingLine
+        match_data = _raw(
+            "Home1", "Away1", "bet365",
+            [("Home1", 2.10), ("Draw", 3.30), ("Away1", 3.60)],
+            datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        await OddsIngestionService(FakeAdapter([match_data])).ingest_odds(
+            db_session, sport_key="football", league_keys=["soccer_spain_la_liga"]
+        )
+        outcome = (await db_session.execute(select(Outcome))).scalars().first()
+        bookmaker = (await db_session.execute(select(Bookmaker))).scalars().first()
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # Odds: 2 viejos (>7d) + 1 reciente (1d)
+        db_session.add_all([
+            Odds(outcome_id=outcome.id, bookmaker_id=bookmaker.id, price=Decimal("2.0"),
+                 captured_at=now - timedelta(days=10), source="test"),
+            Odds(outcome_id=outcome.id, bookmaker_id=bookmaker.id, price=Decimal("2.1"),
+                 captured_at=now - timedelta(days=8), source="test"),
+            Odds(outcome_id=outcome.id, bookmaker_id=bookmaker.id, price=Decimal("2.2"),
+                 captured_at=now - timedelta(days=1), source="test"),
+        ])
+        # ClosingLine: 1 viejo (>30d). UniqueConstraint(outcome,bookmaker)
+        # impide tener 2 para el mismo par, así que el "reciente sobrevive"
+        # lo verificamos con Odds + ApiUsageLog (que sí permiten múltiples).
+        db_session.add_all([
+            ClosingLine(outcome_id=outcome.id, bookmaker_id=bookmaker.id, price=Decimal("1.9"),
+                        captured_at=now - timedelta(days=40)),
+        ])
+        # ApiUsage: 1 viejo (>14d) + 1 reciente (3d)
+        db_session.add_all([
+            ApiUsageLog(source="odds_api", endpoint="/odds", captured_at=now - timedelta(days=20)),
+            ApiUsageLog(source="odds_api", endpoint="/odds", captured_at=now - timedelta(days=3)),
+        ])
+        await db_session.commit()
+
+        await jobs_module.cleanup_job()
+
+        # Cuento lo que queda. Odds inicial de la ingesta + los 1 recientes que
+        # agregué quedan; los viejos se purgan.
+        remaining_odds = (await db_session.execute(select(Odds))).scalars().all()
+        assert all(
+            (now - o.captured_at) <= timedelta(days=7) for o in remaining_odds
+        ), "quedaron Odds más viejos que la retention"
+
+        # El único ClosingLine que insertamos era viejo → debe haber sido purgado.
+        remaining_cl = (await db_session.execute(select(ClosingLine))).scalars().all()
+        assert len(remaining_cl) == 0
+
+        remaining_api = (await db_session.execute(select(ApiUsageLog))).scalars().all()
+        assert len(remaining_api) == 1
+        assert (now - remaining_api[0].captured_at) <= timedelta(days=14)
+
+    async def test_retention_zero_desactiva_la_purga(
+        self, patch_async_session, db_session, monkeypatch
+    ):
+        """Retention=0 deja todos los registros sin tocar (escape hatch)."""
+        from app.config import settings
+        from app.models.api_usage import ApiUsageLog
+
+        monkeypatch.setattr(settings, "RETENTION_ODDS_DAYS", 0)
+        monkeypatch.setattr(settings, "RETENTION_CLOSING_LINES_DAYS", 0)
+        monkeypatch.setattr(settings, "RETENTION_API_USAGE_DAYS", 0)
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        db_session.add_all([
+            ApiUsageLog(source="x", endpoint="/y", captured_at=now - timedelta(days=999)),
+        ])
+        await db_session.commit()
+
+        await jobs_module.cleanup_job()
+
+        remaining = (await db_session.execute(select(ApiUsageLog))).scalars().all()
+        assert len(remaining) == 1, "con retention=0 no debe purgar nada"

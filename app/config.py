@@ -11,6 +11,24 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # CORS: orígenes EXTRA aceptados, separados por coma. Los defaults
+    # (localhost:3000 + 127.0.0.1:3000) siempre están permitidos. Útil para
+    # IPs de red local de testing en mobile o el dominio prod del frontend.
+    # Ejemplo: "http://192.168.1.84:3000,https://valuebet.example.com"
+    CORS_EXTRA_ORIGINS: str = ""
+
+    # --- Retención de datos (cleanup_job los purga por edad) ---
+    # `odds`: tabla más grande (cuotas snapshotted cada 5-15min). Con scoring
+    # ya hecho y arbs persistidos, los registros viejos solo sirven para
+    # auditoría — 30 días alcanza. A 0 desactiva la purga.
+    RETENTION_ODDS_DAYS: int = 30
+    # `closing_lines`: snapshot pre-kickoff, base del CLV tracking. Más valor
+    # histórico (validar edge en el tiempo), retención larga.
+    RETENTION_CLOSING_LINES_DAYS: int = 365
+    # `api_usage_log`: monitoreo de quota de The Odds API. 90d cubre revisiones
+    # de capacidad sin acumular indefinidamente.
+    RETENTION_API_USAGE_DAYS: int = 90
+
     # The Odds API
     ODDS_API_KEY: str = ""
     ODDS_API_BASE_URL: str = "https://api.the-odds-api.com/v4"

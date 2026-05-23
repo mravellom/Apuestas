@@ -657,18 +657,29 @@ async def fetch_scores_job():
 
 @tracked_job("cleanup")
 async def cleanup_job():
-    """Job: limpieza de datos expirados."""
-    from datetime import datetime, timezone
+    """Job: limpieza de datos expirados.
 
-    from sqlalchemy import select
+    Dos responsabilidades:
+      1. Marcar como `completed` los matches cuyo `commence_time` ya pasó.
+      2. Purgar registros viejos de tablas de alto volumen (`odds`,
+         `closing_lines`, `api_usage_log`) según las retention windows de
+         settings — evita que la BD crezca sin tope (era el riesgo nº1 de
+         operación: a 5-15min por snapshot de odds, ~50MB/día sin purga).
+    """
+    from datetime import datetime, timedelta, timezone
 
+    from sqlalchemy import delete, select
+
+    from app.config import settings
+    from app.models.api_usage import ApiUsageLog
+    from app.models.market import ClosingLine, Odds
     from app.models.match import Match
 
     try:
         async with async_session() as db:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-            # Mark past matches as completed (if no score, just mark them)
+            # 1. Mark past matches as completed (if no score, just mark them).
             result = await db.execute(
                 select(Match).where(
                     Match.status == "scheduled",
@@ -680,8 +691,29 @@ async def cleanup_job():
                 match.status = "completed"
                 completed += 1
 
+            # 2. Purga por retención (omite si la setting es <=0).
+            purged: dict[str, int] = {}
+            for model, days, key in (
+                (Odds, settings.RETENTION_ODDS_DAYS, "odds"),
+                (ClosingLine, settings.RETENTION_CLOSING_LINES_DAYS, "closing_lines"),
+                (ApiUsageLog, settings.RETENTION_API_USAGE_DAYS, "api_usage_log"),
+            ):
+                if days <= 0:
+                    continue
+                cutoff = now - timedelta(days=days)
+                stmt = delete(model).where(model.captured_at < cutoff)
+                res = await db.execute(stmt)
+                purged[key] = int(res.rowcount or 0)
+
             await db.commit()
-            logger.info("Cleanup: %d matches marked completed", completed)
+            logger.info(
+                "Cleanup: %d matches→completed; purged "
+                "odds=%d closing_lines=%d api_usage_log=%d",
+                completed,
+                purged.get("odds", 0),
+                purged.get("closing_lines", 0),
+                purged.get("api_usage_log", 0),
+            )
     except Exception as e:
         logger.exception("Cleanup job failed")
 

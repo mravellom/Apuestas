@@ -68,14 +68,19 @@ def create_app() -> FastAPI:
     application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     application.add_middleware(RequestLoggingMiddleware)
     # CORS: con allow_credentials=True la spec prohíbe allow_origins=["*"].
-    # Enumeramos orígenes explícitos del frontend dev + prod.
+    # Defaults siempre permitidos: localhost dev. Orígenes extra (IP de red
+    # local para mobile testing, dominio prod del frontend) vía la env var
+    # `CORS_EXTRA_ORIGINS` — comma-separated. No más IPs hardcodeadas.
+    _cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    _extra = [
+        o.strip()
+        for o in (settings.CORS_EXTRA_ORIGINS or "").split(",")
+        if o.strip()
+    ]
+    _cors_origins.extend(_extra)
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://192.168.1.84:3000",  # red local (mobile testing)
-        ],
+        allow_origins=_cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
