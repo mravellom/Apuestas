@@ -359,12 +359,28 @@ def _decide_paper_bet_result(
 
     if market_type_key == "h2h":
         if home_score > away_score:
-            winner = home_name.lower().replace(" ", "_")
+            winner_side = "home"
         elif away_score > home_score:
-            winner = away_name.lower().replace(" ", "_")
+            winner_side = "away"
         else:
-            winner = "draw"
-        return "won" if key == winner else "lost"
+            winner_side = "draw"
+
+        home_slug = home_name.lower().replace(" ", "_")
+        away_slug = away_name.lower().replace(" ", "_")
+
+        # Las outcomes llegan en dos convenciones: posicional ("home"/"away"/
+        # "draw", canonizada por el normalizador) o slug del nombre del equipo
+        # ("atlanta_braves"). El settlement debe entender ambas; una key que no
+        # corresponda a ningún lado se devuelve como None (skip → queda pending),
+        # nunca "lost" por defecto, para no corromper ambas legs de un arb.
+        if key in ("home", "away", "draw"):
+            return "won" if key == winner_side else "lost"
+        if key in (home_slug, away_slug, "draw"):
+            winner_slug = {"home": home_slug, "away": away_slug, "draw": "draw"}[
+                winner_side
+            ]
+            return "won" if key == winner_slug else "lost"
+        return None
 
     if market_type_key == "totals":
         if market_parameter is None:

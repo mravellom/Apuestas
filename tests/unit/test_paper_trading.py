@@ -288,3 +288,65 @@ class TestSettlement:
         await svc.settle_match(db, match)
 
         assert paper_won.profit_units == Decimal("1.0") * (Decimal("2.0") - Decimal("1"))
+
+    # --- Regresión: keys posicionales h2h ('home'/'away'/'draw') ---
+    # Bug: el normalizador canoniza algunos outcomes h2h a 'home'/'away', pero
+    # el settlement comparaba la key contra el slug del nombre del equipo
+    # (p.ej. 'washington_nationals'), por lo que NINGUNA leg matcheaba y AMBAS
+    # se liquidaban 'lost'. Afectó arb groups 152/153/155/156 (ROI −3.01% vs
+    # +2.19% real). El fix hace que settle entienda ambas convenciones.
+
+    @pytest.mark.asyncio
+    async def test_h2h_positional_away_key_settles_as_won(self):
+        """Visitante gana 0-2: la leg con key 'away' debe ganar, no perder."""
+        svc = PaperTradingService()
+        paper_home, *rest_h = self._make_row("home", "2.10", "0.5")
+        paper_away, *rest_a = self._make_row("away", "2.05", "0.5")
+        db = self._mock_db(
+            [(paper_home, *rest_h), (paper_away, *rest_a)],
+            home_name="Atlanta Braves",
+            away_name="Washington Nationals",
+        )
+        match = MagicMock(id=1, home_team_id=10, away_team_id=20, home_score=0, away_score=2)
+        r = await svc.settle_match(db, match)
+
+        assert r["settled"] == 2
+        assert paper_away.result == "won"
+        assert paper_home.result == "lost"
+        # un arb de 2 vías NUNCA puede tener ambas legs perdidas
+        assert {paper_home.result, paper_away.result} == {"won", "lost"}
+
+    @pytest.mark.asyncio
+    async def test_h2h_positional_home_key_settles_as_won(self):
+        """Local gana 120-108: la leg con key 'home' debe ganar."""
+        svc = PaperTradingService()
+        paper_home, *rest_h = self._make_row("home", "1.80", "0.5")
+        paper_away, *rest_a = self._make_row("away", "2.30", "0.5")
+        db = self._mock_db(
+            [(paper_home, *rest_h), (paper_away, *rest_a)],
+            home_name="San Antonio Spurs",
+            away_name="Oklahoma City Thunder",
+        )
+        match = MagicMock(id=1, home_team_id=10, away_team_id=20, home_score=120, away_score=108)
+        await svc.settle_match(db, match)
+
+        assert paper_home.result == "won"
+        assert paper_away.result == "lost"
+
+    @pytest.mark.asyncio
+    async def test_h2h_unknown_key_is_skipped_not_lost(self):
+        """Una key h2h que no corresponde a ningún lado queda 'pending' (skip),
+        nunca 'lost' por defecto — para no corromper ambas legs de un arb."""
+        svc = PaperTradingService()
+        paper, *rest = self._make_row("equipo_inexistente", "2.0", "0.5")
+        db = self._mock_db(
+            [(paper, *rest)],
+            home_name="Atlanta Braves",
+            away_name="Washington Nationals",
+        )
+        match = MagicMock(id=1, home_team_id=10, away_team_id=20, home_score=0, away_score=2)
+        r = await svc.settle_match(db, match)
+
+        assert r == {"settled": 0, "skipped": 1}
+        assert paper.result == "pending"
+        assert paper.profit_units is None
