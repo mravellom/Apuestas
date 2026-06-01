@@ -42,6 +42,12 @@ LEAGUES = [
     {"sport_key": "football", "key": "soccer_uefa_champs_league", "name": "UEFA Champions League", "country": "Europe"},
     # Europa League
     {"sport_key": "football", "key": "soccer_uefa_europa_league", "name": "UEFA Europa League", "country": "Europe"},
+    # Selecciones — FIFA World Cup 2026 (11 jun – 19 jul 2026, USA/Canadá/México).
+    # 104 partidos. Pinnacle cotiza h2h (3-way) y handicap/totals con liquidez alta
+    # semanas antes; los fixtures de fase de grupos ya están definidos, así que The
+    # Odds API empieza a devolver eventos en los días previos al kickoff. Se activa
+    # desde ya para capturar la apertura del mercado.
+    {"sport_key": "football", "key": "soccer_fifa_world_cup", "name": "FIFA World Cup 2026", "country": "World", "detection_enabled": True},
     # LATAM
     {"sport_key": "football", "key": "soccer_chile_campeonato", "name": "Primera División Chile", "country": "Chile"},
     {"sport_key": "football", "key": "soccer_brazil_campeonato", "name": "Brasileirão Série A", "country": "Brazil"},
